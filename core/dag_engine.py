@@ -82,14 +82,12 @@ class DAGExecutionEngine:
             semaphore = asyncio.Semaphore(self.max_parallel)
 
             async def run_with_limit(
-                node_id: str,
-                sem: asyncio.Semaphore = semaphore,
-                dag_ref: DAG = dag,
+                node_id: str, sem: asyncio.Semaphore, dag_ref: DAG,
             ) -> None:
                 async with sem:
                     await self._execute_single_node(dag_ref, node_id)
 
-            tasks = [run_with_limit(nid) for nid in level]
+            tasks = [run_with_limit(nid, semaphore, dag) for nid in level]
             await asyncio.gather(*tasks, return_exceptions=True)
 
             failed_in_level = [
