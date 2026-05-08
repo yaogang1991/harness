@@ -46,6 +46,8 @@ class HarnessConfig(BaseModel):
     artifact_path: str = "./data/artifacts"
     checkpoint_interval: int = 10  # events
     max_context_messages: int = 50
+    agent_timeout: int = 120  # seconds per agent execution
+    max_context_tokens: int = 100000  # token threshold for context truncation
     log_level: str = "INFO"
 
     @classmethod
@@ -65,4 +67,6 @@ class HarnessConfig(BaseModel):
             ),
             event_store_path=os.getenv("HARNESS_EVENT_STORE", "./data/events"),
             artifact_path=os.getenv("HARNESS_ARTIFACT_PATH", "./data/artifacts"),
+            agent_timeout=int(os.getenv("HARNESS_AGENT_TIMEOUT", "120")),
+            max_context_tokens=int(os.getenv("HARNESS_MAX_CONTEXT_TOKENS", "100000")),
         )

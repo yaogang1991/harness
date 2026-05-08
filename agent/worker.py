@@ -1,16 +1,26 @@
 """
 Agent Worker: the "dumb loop" that calls the LLM and executes tools.
 All intelligence lives in the model. Harness just orchestrates.
+
+Enhanced with:
+- Context window management (token estimation + message truncation)
+- API retry with exponential backoff for transient errors
+- Artifact tracking (files created/modified via write/edit tools)
 """
 
 from __future__ import annotations
 
+import re
+import time
 from typing import Iterator
 
 from core.models import AgentMessage, ToolCall, ToolResult, EventType
 from core.config import LLMConfig
 from core.llm_client import LLMClient
 from session.store import SessionStore
+
+# Transient error name fragments that warrant retry
+_TRANSIENT_MARKERS = ("rate", "timeout", "connection", "overload", "429", "503", "502")
 
 
 class AgentWorker:
@@ -22,10 +32,19 @@ class AgentWorker:
         feed results back
     """
 
-    def __init__(self, config: LLMConfig, session_store: SessionStore):
+    def __init__(
+        self,
+        config: LLMConfig,
+        session_store: SessionStore,
+        max_context_tokens: int = 100_000,
+    ):
         self.config = config
         self.session_store = session_store
         self.llm = LLMClient(config)
+        self.max_context_tokens = max_context_tokens
+        self.artifacts: list[str] = []
+
+    # -- Public interface ---------------------------------------------------
 
     def run(
         self,
@@ -45,8 +64,14 @@ class AgentWorker:
             {"role": "user", "content": user_message},
         ]
 
+        self.artifacts = []
+
         for iteration in range(max_iterations):
-            assistant_message = self.llm.call(messages, tools)
+            # Truncate context if exceeding token budget
+            messages = self._truncate_messages(messages, self.max_context_tokens)
+
+            # Call LLM with retry for transient errors
+            assistant_message = self._call_with_retry(messages, tools)
 
             self.session_store.emit_event(
                 session_id,
@@ -80,6 +105,10 @@ class AgentWorker:
                     "content": result.output if result.success else f"Error: {result.error}",
                 })
 
+                # Track artifacts from successful write/edit calls
+                if result.success:
+                    self._track_artifact(tc["name"], tc.get("arguments", {}))
+
                 self.session_store.emit_event(
                     session_id,
                     EventType.AGENT_TOOL_RESULT,
@@ -94,3 +123,60 @@ class AgentWorker:
 
             messages.append(assistant_message)
             messages.extend(tool_results)
+
+    # -- Context window management ------------------------------------------
+
+    @staticmethod
+    def _estimate_tokens(messages: list[dict]) -> int:
+        """Rough token estimation: ~4 chars per token for English/code."""
+        total_chars = 0
+        for m in messages:
+            total_chars += len(m.get("content", ""))
+            for tc in m.get("tool_calls", []):
+                total_chars += len(str(tc.get("arguments", {})))
+        return total_chars // 4
+
+    def _truncate_messages(
+        self, messages: list[dict], max_tokens: int
+    ) -> list[dict]:
+        """Truncate oldest messages, keeping system prompt + last N exchanges."""
+        if self._estimate_tokens(messages) <= max_tokens:
+            return messages
+
+        system = [m for m in messages if m.get("role") == "system"]
+        non_system = [m for m in messages if m.get("role") != "system"]
+
+        # Keep last 20 messages (roughly 10 tool exchanges)
+        keep_tail = 20
+        if len(non_system) > keep_tail:
+            non_system = non_system[-keep_tail:]
+
+        return system + non_system
+
+    # -- API retry with backoff ---------------------------------------------
+
+    def _call_with_retry(
+        self, messages: list[dict], tools: list[dict], max_retries: int = 3
+    ) -> dict:
+        """Call LLM with exponential backoff for transient errors."""
+        for attempt in range(max_retries + 1):
+            try:
+                return self.llm.call(messages, tools)
+            except Exception as e:
+                if attempt == max_retries:
+                    raise
+                error_name = type(e).__name__.lower()
+                error_msg = str(e).lower()
+                if any(t in error_name or t in error_msg for t in _TRANSIENT_MARKERS):
+                    time.sleep(2 ** attempt)
+                    continue
+                raise
+
+    # -- Artifact tracking --------------------------------------------------
+
+    def _track_artifact(self, tool_name: str, arguments: dict) -> None:
+        """Track file paths from successful write/edit tool calls."""
+        if tool_name in ("write", "edit") and "file_path" in arguments:
+            path = arguments["file_path"]
+            if path not in self.artifacts:
+                self.artifacts.append(path)

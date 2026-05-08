@@ -104,6 +104,8 @@ Evaluate against:
         tool_registry: ToolRegistry,
         guardrails: Guardrails | None = None,
         max_iterations: int = 50,
+        timeout: int = 120,
+        max_context_tokens: int = 100_000,
     ):
         self.capability = capability
         self.llm_config = llm_config
@@ -111,6 +113,7 @@ Evaluate against:
         self.tool_registry = tool_registry
         self.guardrails = guardrails
         self.max_iterations = max_iterations
+        self.timeout = timeout
 
         # Build agent-specific system prompt
         system_prompt = capability.system_prompt or self.SYSTEM_PROMPTS.get(
@@ -118,7 +121,7 @@ Evaluate against:
             f"You are the {capability.name} agent. {capability.description}"
         )
 
-        self.worker = AgentWorker(llm_config, session_store)
+        self.worker = AgentWorker(llm_config, session_store, max_context_tokens=max_context_tokens)
         self.system_prompt = system_prompt
 
         # Filter tools by agent type
@@ -186,12 +189,12 @@ Execute using your available tools. Produce clear, verifiable output.
         try:
             messages = await asyncio.wait_for(
                 asyncio.to_thread(_run_sync),
-                timeout=60,
+                timeout=self.timeout,
             )
         except asyncio.TimeoutError:
             return {
                 "status": "timeout",
-                "summary": "Agent execution timed out after 60s",
+                "summary": f"Agent execution timed out after {self.timeout}s",
                 "artifacts": [],
                 "output": "",
             }
@@ -200,7 +203,7 @@ Execute using your available tools. Produce clear, verifiable output.
         return {
             "status": "completed",
             "summary": final.content if final else "",
-            "artifacts": [],
+            "artifacts": self.worker.artifacts,
             "output": final.content if final else "",
         }
 
@@ -234,6 +237,8 @@ class AgentPool:
         tool_registry: ToolRegistry | None = None,
         guardrails: Guardrails | None = None,
         max_iterations: int = 50,
+        timeout: int = 120,
+        max_context_tokens: int = 100_000,
     ):
         self.llm_config = llm_config
         self.session_store = session_store
@@ -241,6 +246,8 @@ class AgentPool:
         self.tool_registry = tool_registry or ToolRegistry()
         self.guardrails = guardrails
         self.max_iterations = max_iterations
+        self.timeout = timeout
+        self.max_context_tokens = max_context_tokens
         self._instances: dict[str, WorkerAgent] = {}
 
     def get_or_create(self, agent_type: str) -> WorkerAgent:
@@ -257,6 +264,8 @@ class AgentPool:
                 tool_registry=self.tool_registry,
                 guardrails=self.guardrails,
                 max_iterations=self.max_iterations,
+                timeout=self.timeout,
+                max_context_tokens=self.max_context_tokens,
             )
 
         return self._instances[agent_type]

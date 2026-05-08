@@ -58,6 +58,8 @@ class DAGNode(BaseModel):
     result: dict[str, Any] = Field(default_factory=dict)
     error: str = ""
     output_artifacts: list[str] = Field(default_factory=list)
+    success_criteria: list[str] = Field(default_factory=list)
+    eval_feedback: str = ""  # Evaluator feedback, passed back on retry
     max_retries: int = 3
     retry_count: int = 0
     started_at: datetime | None = None

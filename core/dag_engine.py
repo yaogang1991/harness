@@ -42,10 +42,14 @@ class DAGExecutionEngine:
         agent_executor: Callable[[DAGNode, list[HandoffArtifact]], Coroutine[Any, Any, dict]],
         failure_handler: Callable[[DAG, str, str], Coroutine[Any, Any, FailureDecision]],
         max_parallel: int = 5,
+        evaluator: Any | None = None,
+        artifact_path: str = "./data/artifacts",
     ):
         self.agent_executor = agent_executor
         self.failure_handler = failure_handler
         self.max_parallel = max_parallel
+        self.evaluator = evaluator
+        self.artifact_path = artifact_path
         self.event_handlers: list[EventHandler] = []
 
     def on_event(self, handler: EventHandler) -> None:
@@ -141,6 +145,31 @@ class DAGExecutionEngine:
         try:
             result = await self.agent_executor(node, input_artifacts)
 
+            # -- Evaluation gate --
+            if self.evaluator and node.success_criteria:
+                eval_result = await asyncio.to_thread(
+                    self.evaluator.evaluate_stage,
+                    node_id, node_id, node.success_criteria, self.artifact_path,
+                )
+
+                if not eval_result.passed:
+                    node.retry_count += 1
+                    node.eval_feedback = eval_result.feedback
+                    node.error = f"Evaluation failed (score: {eval_result.score}): {eval_result.feedback}"
+                    node.status = NodeStatus.FAILED
+                    node.completed_at = datetime.now(timezone.utc)
+
+                    await self._emit(ExecutionEvent(
+                        node_id=node_id,
+                        event_type="failed",
+                        details={
+                            "reason": "evaluation_failed",
+                            "score": eval_result.score,
+                            "attempt": node.retry_count,
+                        },
+                    ))
+                    return
+
             node.status = NodeStatus.SUCCESS
             node.completed_at = datetime.now(timezone.utc)
             node.result = result
@@ -194,6 +223,16 @@ class DAGExecutionEngine:
                     },
                 )
                 artifacts.append(artifact)
+
+        # Include evaluation feedback from previous attempt (retry scenario)
+        node = dag.nodes[node_id]
+        if node.eval_feedback:
+            artifacts.append(HandoffArtifact(
+                from_agent="evaluator",
+                to_agent=node.agent_type,
+                content=f"Evaluation feedback from previous attempt:\n{node.eval_feedback}",
+                metadata={"type": "eval_feedback", "attempt": node.retry_count},
+            ))
 
         return artifacts
 

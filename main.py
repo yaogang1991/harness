@@ -56,6 +56,7 @@ def _serialize_dag(dag: DAG) -> dict:
                 "id": n.id,
                 "agent_type": n.agent_type,
                 "task": n.task_description,
+                "success_criteria": n.success_criteria,
             }
             for n in dag.nodes.values()
         ],
@@ -128,6 +129,7 @@ async def cmd_execute(args, dag: DAG | None = None):
                 id=node_def["id"],
                 agent_type=node_def["agent_type"],
                 task_description=node_def["task"],
+                success_criteria=node_def.get("success_criteria", []),
             ))
         for edge_def in plan_data.get("edges", []):
             dag.add_edge(edge_def["from"], edge_def["to"])
@@ -148,16 +150,24 @@ async def cmd_execute(args, dag: DAG | None = None):
         tool_registry=tool_registry,
         guardrails=guardrails,
         max_iterations=args.max_iterations,
+        timeout=config.agent_timeout,
+        max_context_tokens=config.max_context_tokens,
     )
 
     # Create orchestrator for failure handling
     orchestrator = IntelligentOrchestrator(config.llm, store, registry)
+
+    # Create evaluator for quality gates
+    from evaluator.engine import EvaluatorEngine
+    evaluator = EvaluatorEngine(session_store=store)
 
     # Create DAG engine
     engine = DAGExecutionEngine(
         agent_executor=pool.get_executor(session_id),
         failure_handler=orchestrator.adapt_to_failure,
         max_parallel=args.max_parallel,
+        evaluator=evaluator,
+        artifact_path=config.artifact_path,
     )
 
     # ── Visualization setup ──────────────────────────────────
@@ -348,8 +358,8 @@ Examples:
 
     # Ensure API key (skip for viz command which doesn't need LLM)
     if args.command != "viz":
-        if not os.getenv("ANTHROPIC_API_KEY") and not os.getenv("OPENAI_API_KEY"):
-            print("Error: ANTHROPIC_API_KEY or OPENAI_API_KEY must be set")
+        if not os.getenv("ANTHROPIC_API_KEY") and not os.getenv("ANTHROPIC_AUTH_TOKEN") and not os.getenv("OPENAI_API_KEY"):
+            print("Error: ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or OPENAI_API_KEY must be set")
             sys.exit(1)
 
     asyncio.run(args.func(args))

@@ -69,13 +69,15 @@ Return a JSON object with this exact structure:
     }},
     {{
       "id": "impl",
-      "agent_type": "generator", 
-      "task": "Implement the planned feature following project conventions..."
+      "agent_type": "generator",
+      "task": "Implement the planned feature following project conventions...",
+      "success_criteria": ["tests pass", "lint clean"]
     }},
     {{
       "id": "eval",
       "agent_type": "evaluator",
-      "task": "Verify implementation against plan and project standards..."
+      "task": "Verify implementation against plan and project standards...",
+      "success_criteria": ["tests pass", "coverage 80%"]
     }}
   ],
   "edges": [
@@ -248,6 +250,7 @@ Choose "retry" if:
                 id=node_def["id"],
                 agent_type=node_def["agent_type"],
                 task_description=node_def["task"],
+                success_criteria=node_def.get("success_criteria", []),
             )
             dag.add_node(node)
 
