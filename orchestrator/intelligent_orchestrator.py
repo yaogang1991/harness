@@ -260,16 +260,25 @@ Choose "retry" if:
         """
         Extract JSON from LLM response (handles markdown code blocks).
 
-        Strategy: fenced code block → brace-matching for raw JSON.
+        Uses regex-based extraction with brace matching to handle edge cases
+        like nested code blocks or multiple code blocks in the response.
         """
         text = text.strip()
 
-        # Strategy 1: fenced JSON code block
-        match = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
-        if match:
-            return json.loads(match.group(1).strip())
+        # Strategy 1: Try to find JSON inside ```json ... ``` blocks
+        json_block_match = re.search(r"```json\s*\n(.*?)```", text, re.DOTALL)
+        if json_block_match:
+            return json.loads(json_block_match.group(1).strip())
 
-        # Strategy 2: find the first top-level JSON object via brace matching
+        # Strategy 2: Try to find JSON inside generic ``` ... ``` blocks
+        generic_block_match = re.search(r"```\s*\n(.*?)```", text, re.DOTALL)
+        if generic_block_match:
+            candidate = generic_block_match.group(1).strip()
+            if candidate.startswith("{") or candidate.startswith("["):
+                return json.loads(candidate)
+
+        # Strategy 3: Find the first top-level JSON object using brace matching
+        # This handles cases where the LLM outputs raw JSON without code blocks
         brace_depth = 0
         start = None
         for i, ch in enumerate(text):
@@ -280,10 +289,11 @@ Choose "retry" if:
             elif ch == '}':
                 brace_depth -= 1
                 if brace_depth == 0 and start is not None:
+                    candidate = text[start:i + 1]
                     try:
-                        return json.loads(text[start:i + 1])
+                        return json.loads(candidate)
                     except json.JSONDecodeError:
                         start = None
                         continue
 
-        raise ValueError(f"No valid JSON object found in LLM response")
+        raise json.JSONDecodeError("No valid JSON object found in LLM response", text, 0)

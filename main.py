@@ -14,7 +14,7 @@ import json
 import os
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -34,6 +34,7 @@ def load_registry(project_path: str | None = None) -> AgentRegistry:
     """Load agent registry with defaults + project custom agents."""
     registry = AgentRegistry()
 
+    # Load project-specific agents if .harness/agents.yaml exists
     if project_path:
         agents_yaml = Path(project_path) / ".harness" / "agents.yaml"
         if agents_yaml.exists():
@@ -48,7 +49,11 @@ def _serialize_dag(dag: DAG) -> dict:
     return {
         "reasoning": dag.reasoning,
         "nodes": [
-            {"id": n.id, "agent_type": n.agent_type, "task": n.task_description}
+            {
+                "id": n.id,
+                "agent_type": n.agent_type,
+                "task": n.task_description,
+            }
             for n in dag.nodes.values()
         ],
         "edges": [{"from": e.from_node, "to": e.to_node} for e in dag.edges],
@@ -70,6 +75,7 @@ async def cmd_plan(args):
     print(f"Planning: {args.requirement}")
     print(f"Available agents: {[a.id for a in registry.list_agents()]}")
 
+    # Generate DAG
     dag = await orchestrator.plan(
         requirement=args.requirement,
         project_context={"project_path": args.project} if args.project else None,
@@ -78,7 +84,7 @@ async def cmd_plan(args):
     # Save plan with deterministic filename
     plans_dir = Path("./data/plans")
     plans_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     plan_file = plans_dir / f"plan_{timestamp}_{uuid.uuid4().hex[:8]}.json"
 
     plan_data = _serialize_dag(dag)
@@ -87,6 +93,7 @@ async def cmd_plan(args):
     with open(plan_file, "w") as f:
         json.dump(plan_data, f, indent=2, default=str)
 
+    # Print plan summary
     print(f"\nPlan saved: {plan_file}")
     print(f"\nReasoning: {dag.reasoning}")
     print(f"\nExecution levels:")
@@ -122,22 +129,35 @@ async def cmd_execute(args, dag: DAG | None = None):
         for edge_def in plan_data.get("edges", []):
             dag.add_edge(edge_def["from"], edge_def["to"])
 
-    # Create guardrails bound to the same tool_registry instance
-    guardrails = Guardrails(
-        GuardrailPolicy(mode=PermissionMode.ACCEPT_EDITS),
-        tool_registry,
+    # Create guardrails (default: accept_edits for v2.0)
+    policy = GuardrailPolicy(
+        mode=PermissionMode.ACCEPT_EDITS,
+        auto_approve_read=True,
+        max_iterations=args.max_iterations,
+    )
+    guardrails = Guardrails(policy, tool_registry)
+
+    # Create agent pool with guardrails
+    pool = AgentPool(
+        llm_config=config.llm,
+        session_store=store,
+        agent_registry=registry,
+        tool_registry=tool_registry,
+        guardrails=guardrails,
+        max_iterations=args.max_iterations,
     )
 
-    pool = AgentPool(config.llm, store, registry, tool_registry, guardrails)
-
+    # Create orchestrator for failure handling
     orchestrator = IntelligentOrchestrator(config.llm, store, registry)
 
+    # Create DAG engine
     engine = DAGExecutionEngine(
         agent_executor=pool.get_executor(session_id),
         failure_handler=orchestrator.adapt_to_failure,
         max_parallel=args.max_parallel,
     )
 
+    # Progress callback
     async def on_event(event):
         print(f"  [{event.event_type.upper()}] {event.node_id}: {event.details}")
 
@@ -147,8 +167,10 @@ async def cmd_execute(args, dag: DAG | None = None):
     print(f"Levels: {dag.topological_levels()}")
     print()
 
+    # Execute
     result_dag = await engine.execute(dag)
 
+    # Summary
     summary = engine.get_execution_summary(result_dag)
     print(f"\nExecution complete:")
     print(f"  Total: {summary['total_nodes']}")
@@ -162,6 +184,7 @@ async def cmd_execute(args, dag: DAG | None = None):
 
 async def cmd_run(args):
     """Plan + Execute in one command."""
+    # Plan
     dag = await cmd_plan(args)
 
     # Pass DAG directly to avoid serialization round-trip
@@ -169,6 +192,7 @@ async def cmd_run(args):
         plan_file="",  # not used when dag is provided
         project=args.project,
         max_parallel=args.max_parallel,
+        max_iterations=args.max_iterations,
     )
     return await cmd_execute(exec_args, dag=dag)
 
@@ -203,17 +227,26 @@ Examples:
         default=3,
         help="Max parallel agent executions (default: 3)",
     )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=50,
+        help="Max iterations per agent loop (default: 50)",
+    )
 
     subparsers = parser.add_subparsers(dest="command", help="Command")
 
+    # plan command
     plan_parser = subparsers.add_parser("plan", help="Generate execution plan")
     plan_parser.add_argument("requirement", help="User requirement")
     plan_parser.set_defaults(func=cmd_plan)
 
+    # execute command
     exec_parser = subparsers.add_parser("execute", help="Execute a saved plan")
     exec_parser.add_argument("plan_file", help="Path to plan JSON file")
     exec_parser.set_defaults(func=cmd_execute)
 
+    # run command (plan + execute)
     run_parser = subparsers.add_parser("run", help="Plan and execute in one step")
     run_parser.add_argument("requirement", help="User requirement")
     run_parser.set_defaults(func=cmd_run)
@@ -224,6 +257,7 @@ Examples:
         parser.print_help()
         sys.exit(1)
 
+    # Ensure API key
     if not os.getenv("ANTHROPIC_API_KEY") and not os.getenv("OPENAI_API_KEY"):
         print("Error: ANTHROPIC_API_KEY or OPENAI_API_KEY must be set")
         sys.exit(1)

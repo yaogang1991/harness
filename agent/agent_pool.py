@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from core.models import AgentMessage, ToolResult
+from core.models import AgentMessage
 from core.models_v2 import DAGNode, HandoffArtifact, AgentCapability
 from core.config import LLMConfig
 from core.agent_registry import AgentRegistry
@@ -89,6 +89,7 @@ Evaluate against:
 """,
     }
 
+    # Agent-type-specific tool allowlists
     TOOL_ALLOWLIST = {
         "planner": {"read", "glob", "grep"},
         "generator": {"read", "write", "edit", "bash", "glob", "grep", "git"},
@@ -102,12 +103,14 @@ Evaluate against:
         session_store: SessionStore,
         tool_registry: ToolRegistry,
         guardrails: Guardrails | None = None,
+        max_iterations: int = 50,
     ):
         self.capability = capability
         self.llm_config = llm_config
         self.session_store = session_store
         self.tool_registry = tool_registry
         self.guardrails = guardrails
+        self.max_iterations = max_iterations
 
         # Build agent-specific system prompt
         system_prompt = capability.system_prompt or self.SYSTEM_PROMPTS.get(
@@ -122,6 +125,12 @@ Evaluate against:
         allowed = self.TOOL_ALLOWLIST.get(capability.id, {"read", "glob", "grep"})
         self.tools = [s for s in tool_registry.schemas if s["name"] in allowed]
 
+    def _execute_tool(self, name: str, arguments: dict):
+        """Execute a tool through guardrails if available, otherwise directly."""
+        if self.guardrails:
+            return self.guardrails.guarded_execute(name, arguments)
+        return self.tool_registry.execute(name, arguments)
+
     async def execute(
         self,
         task: str,
@@ -134,6 +143,7 @@ Evaluate against:
         Context isolation: Each execution starts fresh - previous
         executions do not pollute the context window.
         """
+        # Build context from input artifacts
         artifact_context = self._format_artifacts(input_artifacts)
 
         full_prompt = f"""{artifact_context}
@@ -143,27 +153,11 @@ Your task: {task}
 Execute using your available tools. Produce clear, verifiable output.
 """
 
+        # Run the agent (dumb loop) via AgentWorker
         return await self._run_with_tools(full_prompt, session_id)
 
     async def _run_with_tools(self, prompt: str, session_id: str) -> dict[str, Any]:
         """Run agent loop and collect results via AgentWorker."""
-
-        def _guarded_execute(name: str, arguments: dict) -> ToolResult:
-            """Route tool calls through guardrails if configured."""
-            if self.guardrails:
-                allowed, reason = self.guardrails.evaluate(name, arguments)
-                if not allowed:
-                    return ToolResult(
-                        tool_call_id="",
-                        success=False,
-                        error=f"Blocked by guardrails: {reason}",
-                    )
-            return self.tool_registry.execute(name, arguments)
-
-        # Derive max_iterations from guardrails policy if available, else default
-        max_iter = 50
-        if self.guardrails:
-            max_iter = self.guardrails.policy.max_iterations
 
         def _run_sync() -> list[AgentMessage]:
             return list(
@@ -172,8 +166,8 @@ Execute using your available tools. Produce clear, verifiable output.
                     system_prompt=self.system_prompt,
                     user_message=prompt,
                     tools=self.tools,
-                    tool_executor=_guarded_execute,
-                    max_iterations=max_iter,
+                    tool_executor=self,
+                    max_iterations=self.max_iterations,
                 )
             )
 
@@ -229,12 +223,14 @@ class AgentPool:
         agent_registry: AgentRegistry,
         tool_registry: ToolRegistry | None = None,
         guardrails: Guardrails | None = None,
+        max_iterations: int = 50,
     ):
         self.llm_config = llm_config
         self.session_store = session_store
         self.agent_registry = agent_registry
         self.tool_registry = tool_registry or ToolRegistry()
         self.guardrails = guardrails
+        self.max_iterations = max_iterations
         self._instances: dict[str, WorkerAgent] = {}
 
     def get_or_create(self, agent_type: str) -> WorkerAgent:
@@ -250,6 +246,7 @@ class AgentPool:
                 session_store=self.session_store,
                 tool_registry=self.tool_registry,
                 guardrails=self.guardrails,
+                max_iterations=self.max_iterations,
             )
 
         return self._instances[agent_type]

@@ -52,12 +52,20 @@ class EvaluatorEngine:
                 feedback_parts.append(f"WARN {criterion}: {msg}")
                 uncheckable.append(criterion)
 
-        overall_passed = all(results.values()) and not uncheckable
+        # A criterion that cannot be automatically verified should NOT
+        # be treated as passed — mark the whole evaluation as incomplete
+        # so the caller knows human review is needed.
+        all_auto_passed = all(results.values())
+        has_uncheckable = len(uncheckable) > 0
+
+        overall_passed = all_auto_passed and not has_uncheckable
+
         feedback = "\n".join(feedback_parts)
-        if uncheckable:
+        if has_uncheckable:
             feedback += (
                 f"\n\nWARNING: {len(uncheckable)} criterion/criteria could not be "
-                f"automatically verified: {', '.join(uncheckable)}"
+                f"automatically verified and require manual review: "
+                f"{', '.join(uncheckable)}"
             )
 
         result = EvaluationResult(
@@ -82,6 +90,8 @@ class EvaluatorEngine:
 
         Returns:
             (passed, message, was_auto_checked)
+            was_auto_checked=False means this criterion could not be verified
+            and should be flagged for manual review.
         """
         criterion_lower = criterion.lower()
         path = Path(artifact_path)
@@ -107,6 +117,7 @@ class EvaluatorEngine:
             passed, msg = self._check_no_critical_issues(path)
             return passed, msg, True
 
+        # Unrecognized criterion — do NOT assume passed
         return False, (
             f"Criterion '{criterion}' is not automatically checkable. "
             f"Supported patterns: 'tests pass', 'coverage', 'lint clean', "
