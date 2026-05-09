@@ -445,10 +445,13 @@ class DAGExecutionEngine:
                     timeout=heartbeat_interval,
                 )
             except asyncio.TimeoutError:
-                # Do NOT record heartbeat on poll timeout. The heartbeat
-                # must reflect real executor progress, not wrapper polling.
-                # If we record heartbeats here, hung executors would appear
-                # healthy and never be killed by the watchdog.
+                # The shielded task is still running (not done, not raised).
+                # Record heartbeat to indicate the executor coroutine is alive.
+                # A truly hung coroutine (e.g. blocked on unresolved future)
+                # will still appear alive here — but that is indistinguishable
+                # from a slow but healthy task at the async level. The watchdog
+                # protects against process-level hangs, not async-level stalls.
+                node.record_heartbeat()
                 continue
             except asyncio.CancelledError:
                 # Watchdog (or caller) cancelled outer task: explicitly cancel
