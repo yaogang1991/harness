@@ -556,6 +556,18 @@ class TaskWorker:
                     job_id=job_id,
                     status=JobStatus.SUCCEEDED.value,
                 )
+            elif run.status == RunStatus.ABORTED:
+                current_job = await asyncio.to_thread(self.repository.get_job, job_id)
+                if current_job and current_job.status in {JobStatus.QUEUED, JobStatus.CANCELED}:
+                    _json_log(
+                        "INFO",
+                        "Run aborted due to external state transition",
+                        job_id=job_id,
+                        status=current_job.status.value,
+                    )
+                else:
+                    error_msg = f"Run ended with status {run.status.value}"
+                    await self._handle_failure(job_id, error_msg, "unknown")
             else:
                 # Run finished but not succeeded — treat as failure.
                 error_msg = f"Run ended with status {run.status.value}"

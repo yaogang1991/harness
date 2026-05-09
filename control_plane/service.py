@@ -206,6 +206,7 @@ class RunService:
                 replan_handler=lambda dag, failed_id: orchestrator.replan(
                     dag, failed_id, job.requirement,
                 ),
+                job_id=job_id,
             )
             summary = engine.get_execution_summary(result_dag)
 
@@ -226,11 +227,12 @@ class RunService:
             # Transition job to final state unless externally canceled/requeued.
             current_job = self.repository.get_job(job_id)
             if current_job and current_job.status != JobStatus.RUNNING:
-                run.status = (
-                    RunStatus.CANCELED
-                    if current_job.status == JobStatus.CANCELED
-                    else RunStatus.FAILED
-                )
+                if current_job.status == JobStatus.CANCELED:
+                    run.status = RunStatus.ABORTED
+                elif current_job.status == JobStatus.QUEUED:
+                    run.status = RunStatus.ABORTED
+                else:
+                    run.status = RunStatus.FAILED
                 run.completed_at = _utc_now()
                 self.repository.update_run(run)
                 return self.repository.get_run(run.id) or run
@@ -270,7 +272,7 @@ class RunService:
             # --- Timeout handling ---
             current_job = self.repository.get_job(job_id)
             if current_job and current_job.status == JobStatus.CANCELED:
-                run.status = RunStatus.CANCELED
+                run.status = RunStatus.ABORTED
                 run.completed_at = _utc_now()
                 run.dag_result = {"error": "canceled", "reason": "Job canceled during execution"}
                 self.repository.update_run(run)
@@ -294,7 +296,7 @@ class RunService:
             )
 
         except asyncio.CancelledError:
-            run.status = RunStatus.CANCELED
+            run.status = RunStatus.ABORTED
             run.completed_at = _utc_now()
             run.dag_result = {"error": "canceled", "reason": "Run coroutine canceled"}
             self.repository.update_run(run)
@@ -309,7 +311,7 @@ class RunService:
             # --- Unexpected error handling ---
             current_job = self.repository.get_job(job_id)
             if current_job and current_job.status == JobStatus.CANCELED:
-                run.status = RunStatus.CANCELED
+                run.status = RunStatus.ABORTED
                 run.completed_at = _utc_now()
                 run.dag_result = {"error": "canceled", "reason": "Job canceled during execution"}
                 self.repository.update_run(run)
@@ -562,6 +564,7 @@ class RunService:
             replan_handler=lambda dag_ref, failed_id: orchestrator.replan(
                 dag_ref, failed_id, job.requirement,
             ),
+            job_id=job.id,
         )
         result_dag = await engine.execute(dag)
 
@@ -581,6 +584,7 @@ class RunService:
         session_id: str,
         store: SessionStore,
         replan_handler: Any | None = None,
+        job_id: str = "",
     ) -> DAGExecutionEngine:
         """Build a DAGExecutionEngine with agent pool, failure handler, and optional replan handler."""
         registry = AgentRegistry()
@@ -608,6 +612,8 @@ class RunService:
             guardrails = Guardrails(policy, tool_registry)
 
         pool = AgentPool(
+            job_id=job_id,
+            run_id=session_id,
             llm_config=self.llm_config,
             session_store=store,
             agent_registry=registry,

@@ -106,6 +106,8 @@ Evaluate against:
         max_iterations: int = 50,
         timeout: int = 120,
         max_context_tokens: int = 100_000,
+        job_id: str = "",
+        run_id: str | None = None,
     ):
         self.capability = capability
         self.llm_config = llm_config
@@ -131,7 +133,13 @@ Evaluate against:
     def _execute_tool(self, name: str, arguments: dict):
         """Execute a tool through guardrails if available, otherwise directly."""
         if self.guardrails:
-            return self.guardrails.guarded_execute(name, arguments)
+            return self.guardrails.guarded_execute(
+                name,
+                arguments,
+                job_id=getattr(self, "job_id", ""),
+                run_id=getattr(self, "run_id", None),
+                approval_repo=getattr(self.guardrails, "approval_repo", None),
+            )
         return self.tool_registry.execute(name, arguments)
 
     async def execute(
@@ -239,6 +247,8 @@ class AgentPool:
         max_iterations: int = 50,
         timeout: int = 120,
         max_context_tokens: int = 100_000,
+        job_id: str = "",
+        run_id: str | None = None,
     ):
         self.llm_config = llm_config
         self.session_store = session_store
@@ -249,6 +259,8 @@ class AgentPool:
         self.timeout = timeout
         self.max_context_tokens = max_context_tokens
         self._instances: dict[str, WorkerAgent] = {}
+        self.job_id = job_id
+        self.run_id = run_id
 
     def get_or_create(self, agent_type: str) -> WorkerAgent:
         """Get or create a WorkerAgent instance for the given type."""

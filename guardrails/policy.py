@@ -281,12 +281,13 @@ class Guardrails:
         ``GuardrailResult.ticket_id``.
         """
         result = self.evaluate(tool_name, arguments)
+        repo = approval_repo or getattr(self, "approval_repo", None)
 
         if result.decision == "allowed":
             return self.tool_registry.execute(tool_name, arguments)
 
-        if result.decision == "pending_approval" and approval_repo is not None and job_id:
-            ticket = approval_repo.create_ticket(
+        if result.decision == "pending_approval" and repo is not None and job_id:
+            ticket = repo.create_ticket(
                 job_id=job_id,
                 tool_name=tool_name,
                 args=arguments,
