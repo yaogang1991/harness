@@ -209,8 +209,10 @@ class RunService:
             # Load project config from resolved project root (not job.project_path which may be None)
             project_config = ProjectConfig.load(str(project_root))
 
+            # Prefer RunService constructor override, fall back to env config
+            effective_workspace = self.default_backend or harness_config.workspace_isolation
             backend_manager = BackendManager(
-                workspace=WorkspaceIsolation(harness_config.workspace_isolation),
+                workspace=WorkspaceIsolation(effective_workspace),
                 sandbox=ExecutionSandbox(harness_config.execution_sandbox),
                 repo_root=str(project_root),
                 base_path=self.backend_base_path,
@@ -749,7 +751,7 @@ class RunService:
             policy = self.policy
         else:
             policy = GuardrailPolicy(
-                mode=PermissionMode(gc.approval_policy.upper()),
+                mode=PermissionMode(gc.approval_policy),
                 auto_approve_read=True,
                 max_iterations=self.max_iterations,
                 denied_commands=gc.denied_commands,

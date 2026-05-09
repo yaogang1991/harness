@@ -137,6 +137,9 @@ class TaskWorker:
         self._main_task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
 
+        # Hot reload: initialized here so register_project_path works before start()
+        self._config_mtimes: dict[str, float] = {}
+
         # Track jobs we currently hold a lease on for heartbeat purposes.
         # job_id -> asyncio.Task running the job
         self._in_flight: dict[str, asyncio.Task[None]] = {}
@@ -413,8 +416,6 @@ class TaskWorker:
         """
         empty_polls = 0
         backoff = self.config.poll_interval_sec
-        # Hot reload: track project config mtimes
-        self._config_mtimes: dict[str, float] = {}
 
         while not self._stop_event.is_set():
             try:
@@ -662,18 +663,22 @@ class TaskWorker:
         """
         Check known project paths for config file changes.
 
-        Compares .harness/config.yaml mtime against cached values.
+        Discovers project paths from queued/running jobs, registers them,
+        then compares .harness/config.yaml mtime against cached values.
         On change, the config is reloaded in place so future job
         dispatches use the new settings. In-flight jobs are unaffected.
         """
         from pathlib import Path
 
-        # Collect all known project paths from active jobs
-        known_paths: set[str] = set()
-        for job_id in list(self._in_flight.keys()):
-            # We can't easily get project_path from here, but we can
-            # check paths we've seen before from _config_mtimes
-            pass
+        # Discover project paths from jobs in the repository
+        try:
+            from control_plane.models import JobStatus
+            jobs = self.repository.list_jobs()
+            for job in jobs:
+                if job.project_path and job.project_path not in self._config_mtimes:
+                    self.register_project_path(job.project_path)
+        except Exception:
+            pass  # Discovery failure should not break the poll loop
 
         for project_path_str in list(self._config_mtimes.keys()):
             config_path = Path(project_path_str) / ".harness" / "config.yaml"
