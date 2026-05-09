@@ -322,6 +322,8 @@ async def api_retry_job(job_id: str):
     job.attempt = 0
     job.last_error = ""
     job.error_category = ""
+    job.lease_owner = None
+    job.lease_expires_at = None
     job.updated_at = datetime.now(timezone.utc)
     repo.update_job(job)
     return {"job_id": job.id, "status": job.status.value, "message": "Job queued for retry"}
@@ -336,10 +338,10 @@ async def api_recover():
     for job in orphaned:
         # Update associated run records
         runs = repo.list_runs_by_job(job.id)
+        from control_plane.models import RunStatus
         for r in runs:
-            if r.status.value == "running":
-                from control_plane.models import RunStatus
-                r.status = RunStatus.CANCELED
+            if r.status == RunStatus.RUNNING:
+                r.status = RunStatus.ABORTED
                 r.completed_at = datetime.now(timezone.utc)
                 r.dag_result = {"error": "recovered", "reason": "Orphaned job recovered"}
                 repo._persist_run(r)
