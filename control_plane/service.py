@@ -725,6 +725,7 @@ class RunService:
             llm_config=self.llm_config,
             session_store=store,
             agent_registry=registry,
+            llm_router=getattr(self, "llm_router", None),
         )
 
     def _create_execution_engine(
@@ -784,6 +785,7 @@ class RunService:
             max_iterations=self.max_iterations,
             timeout=self.agent_timeout,
             max_context_tokens=self.max_context_tokens,
+            llm_router=getattr(self, "llm_router", None),
         )
 
         # Orchestrator for failure handling
