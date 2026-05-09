@@ -18,6 +18,7 @@ Design decisions:
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import traceback
 import uuid
@@ -97,6 +98,9 @@ class RunService:
         event_store_path: str = "./data/events",
         max_iterations: int = 50,
         policy: GuardrailPolicy | None = None,
+        non_interactive: bool = False,
+        approval_repo: Any | None = None,
+        approval_timeout_sec: int = 300,
     ) -> None:
         self.repository = repository
         self.llm_config = llm_config
@@ -107,6 +111,9 @@ class RunService:
         self.event_store_path = event_store_path
         self.max_iterations = max_iterations
         self.policy = policy
+        self.non_interactive = non_interactive
+        self.approval_repo = approval_repo
+        self.approval_timeout_sec = approval_timeout_sec
 
     # ------------------------------------------------------------------
     # Public API — Job lifecycle
@@ -177,6 +184,10 @@ class RunService:
         timeout: int = job.metadata.get("run_timeout_sec", 600)
 
         try:
+            # --- Non-interactive: expire old approval tickets ---
+            if self.non_interactive and self.approval_repo is not None:
+                self.approval_repo.expire_tickets()
+
             # --- Core execution (with task-level timeout) ---
             result_dag = await asyncio.wait_for(
                 self._execute_plan_and_run(job, session_id, store),
@@ -374,6 +385,72 @@ class RunService:
             )
 
     # ------------------------------------------------------------------
+    # Approval resume / abort
+    # ------------------------------------------------------------------
+
+    async def resume_after_approval(self, job_id: str, ticket_id: str) -> Run | None:
+        """
+        审批通过后恢复执行。
+
+        被 worker 或 CLI 调用，在 ticket 被 approve 后继续执行被暂停的节点。
+        """
+        job = self.repository.get_job(job_id)
+        if not job:
+            return None
+
+        # 获取关联的 run
+        runs = self.repository.list_runs_by_job(job_id)
+        active_runs = [r for r in runs if r.status == RunStatus.RUNNING]
+
+        if not active_runs:
+            return None
+
+        run = active_runs[-1]  # 取最新的 active run
+
+        # 记录恢复事件
+        self._emit_event("approval_resumed", job_id, {
+            "ticket_id": ticket_id,
+            "run_id": run.id,
+            "job_id": job_id,
+        })
+
+        return run
+
+    async def abort_after_rejection(self, job_id: str, ticket_id: str, reason: str = "") -> Job:
+        """
+        审批被拒绝后中止任务。
+
+        将 job 状态推进到 failed 或 dead_letter（根据重试策略）。
+        """
+        job = self.repository.get_job(job_id)
+        if not job:
+            raise ValueError(f"Job {job_id} not found")
+
+        error_msg = f"Approval ticket {ticket_id} rejected"
+        if reason:
+            error_msg += f": {reason}"
+
+        job = await self.handle_job_failure(job, error_msg, "approval_rejected")
+
+        self._emit_event("approval_rejected_abort", job_id, {
+            "ticket_id": ticket_id,
+            "job_status": job.status.value,
+            "reason": reason,
+        })
+
+        return job
+
+    def _emit_event(self, event_type: str, job_id: str, details: dict[str, Any]) -> None:
+        """发出结构化事件（用于日志和监控）。"""
+        event: dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "type": event_type,
+            "job_id": job_id,
+            "details": details,
+        }
+        print(json.dumps(event), flush=True)
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -438,7 +515,12 @@ class RunService:
 
         # 如果 policy 是 PersonalGuardrailPolicy，使用 PersonalGuardrails
         if isinstance(policy, PersonalGuardrailPolicy):
-            guardrails = PersonalGuardrails(policy, tool_registry)
+            guardrails = PersonalGuardrails(
+                policy,
+                tool_registry,
+                non_interactive=self.non_interactive,
+                approval_repo=self.approval_repo,
+            )
         else:
             guardrails = Guardrails(policy, tool_registry)
 
