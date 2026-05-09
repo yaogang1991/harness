@@ -37,6 +37,7 @@ from control_plane.models import JobStatus
 from control_plane.repository import JobRepository
 from control_plane.service import RunService
 from control_plane.worker import TaskWorker, WorkerConfig, run_worker
+from control_plane.approval import ApprovalRepository, TicketStatus
 
 
 def load_registry(project_path: str | None = None) -> AgentRegistry:
@@ -301,10 +302,17 @@ def _make_repository() -> JobRepository:
     return JobRepository(base_path="./data/jobs")
 
 
-def _make_run_service(repository: JobRepository) -> RunService:
+def _make_run_service(repository: JobRepository, non_interactive: bool = False) -> RunService:
     """Create a RunService with LLM config from environment."""
     harness_config = HarnessConfig.from_env()
-    return RunService(repository=repository, llm_config=harness_config.llm)
+    approval_repo = ApprovalRepository()
+    return RunService(
+        repository=repository,
+        llm_config=harness_config.llm,
+        approval_repo=approval_repo,
+        non_interactive=non_interactive,
+        approval_timeout_sec=harness_config.approval_timeout_sec,
+    )
 
 
 async def cmd_submit(args):
@@ -416,10 +424,14 @@ async def cmd_cancel(args):
 async def cmd_worker(args):
     """Start a background worker that polls for and executes jobs."""
     repository = _make_repository()
-    service = _make_run_service(repository)
+    non_interactive = args.non_interactive or os.getenv(
+        "HARNESS_NON_INTERACTIVE", ""
+    ).lower() in ("true", "1", "yes")
+    service = _make_run_service(repository, non_interactive=non_interactive)
     config = WorkerConfig(
         concurrency=args.concurrency,
         poll_interval_sec=args.poll_interval,
+        non_interactive=non_interactive,
     )
 
     await run_worker(repository, service, config)
@@ -444,6 +456,112 @@ async def cmd_recover(args):
         "message": f"Recovered {len(recovered)} orphan jobs",
     }
     print(json.dumps(result, indent=2, default=str))
+
+
+# =============================================================================
+# Approval ticket CLI commands
+# =============================================================================
+
+
+async def cmd_tickets(args):
+    """List approval tickets."""
+    repo = ApprovalRepository()
+
+    # Expire old tickets first
+    repo.expire_tickets()
+
+    # Query
+    status = TicketStatus(args.status) if args.status else None
+    tickets = repo.list_tickets(status=status, job_id=args.job_id)
+
+    # Format output
+    result = {
+        "tickets": [
+            {
+                "id": t.id,
+                "job_id": t.job_id,
+                "tool_name": t.tool_name,
+                "status": t.status.value,
+                "risk_level": t.risk_level,
+                "args_preview": t.args_preview,
+                "requested_at": t.requested_at.isoformat(),
+                "expires_at": t.expires_at.isoformat() if t.expires_at else None,
+            }
+            for t in tickets
+        ],
+        "count": len(tickets),
+        "stats": repo.get_stats(),
+    }
+    print(json.dumps(result, indent=2, default=str))
+
+
+async def cmd_approve(args):
+    """Approve an approval ticket."""
+    repo = ApprovalRepository()
+    job_repo = _make_repository()
+    service = _make_run_service(job_repo, non_interactive=True)
+    ticket = repo.get_ticket(args.ticket_id)
+
+    if not ticket:
+        sys.stderr.write(json.dumps({"error": f"Ticket {args.ticket_id} not found",
+                                     "code": "E3001"}) + "\n")
+        sys.exit(1)
+
+    previous_status = ticket.status.value
+
+    try:
+        ticket = repo.approve_ticket(args.ticket_id, reason=args.reason or "")
+        await service.resume_after_approval(ticket.job_id, ticket.id)
+    except ValueError as e:
+        sys.stderr.write(json.dumps({"error": str(e), "code": "E3002"}) + "\n")
+        sys.exit(1)
+
+    print(json.dumps({
+        "ticket_id": ticket.id,
+        "status": ticket.status.value,
+        "previous_status": previous_status,
+        "decided_by": ticket.decided_by,
+        "reason": ticket.reason,
+        "decided_at": ticket.decided_at.isoformat() if ticket.decided_at else None,
+        "message": "Ticket approved",
+    }, indent=2, default=str))
+
+
+async def cmd_reject(args):
+    """Reject an approval ticket."""
+    repo = ApprovalRepository()
+    job_repo = _make_repository()
+    service = _make_run_service(job_repo, non_interactive=True)
+    ticket = repo.get_ticket(args.ticket_id)
+
+    if not ticket:
+        sys.stderr.write(json.dumps({"error": f"Ticket {args.ticket_id} not found",
+                                     "code": "E3001"}) + "\n")
+        sys.exit(1)
+
+    previous_status = ticket.status.value
+
+    try:
+        ticket = repo.reject_ticket(args.ticket_id, reason=args.reason or "")
+        try:
+            await service.abort_after_rejection(ticket.job_id, ticket.id, reason=args.reason or "")
+        except ValueError as abort_error:
+            # Ticket rejection must remain valid even if job record is gone.
+            if "not found" not in str(abort_error):
+                raise
+    except ValueError as e:
+        sys.stderr.write(json.dumps({"error": str(e), "code": "E3003"}) + "\n")
+        sys.exit(1)
+
+    print(json.dumps({
+        "ticket_id": ticket.id,
+        "status": ticket.status.value,
+        "previous_status": previous_status,
+        "decided_by": ticket.decided_by,
+        "reason": ticket.reason,
+        "decided_at": ticket.decided_at.isoformat() if ticket.decided_at else None,
+        "message": "Ticket rejected",
+    }, indent=2, default=str))
 
 
 def main():
@@ -548,11 +666,36 @@ Examples:
     worker_parser = subparsers.add_parser("worker", help="Start worker")
     worker_parser.add_argument("--concurrency", type=int, default=1, help="Number of concurrent jobs (default: 1)")
     worker_parser.add_argument("--poll-interval", type=int, default=5, help="Poll interval in seconds (default: 5)")
+    worker_parser.add_argument("--non-interactive", action="store_true",
+                               help="Run in non-interactive mode (no stdin approval)")
     worker_parser.set_defaults(func=cmd_worker)
 
     # recover command
     recover_parser = subparsers.add_parser("recover", help="Recover orphaned jobs after restart")
     recover_parser.set_defaults(func=cmd_recover)
+
+    # ------------------------------------------------------------------
+    # Approval ticket commands
+    # ------------------------------------------------------------------
+
+    # tickets command
+    tickets_parser = subparsers.add_parser("tickets", help="List approval tickets")
+    tickets_parser.add_argument("--status", choices=[s.value for s in TicketStatus],
+                                help="Filter by status")
+    tickets_parser.add_argument("--job", dest="job_id", help="Filter by job ID")
+    tickets_parser.set_defaults(func=cmd_tickets)
+
+    # approve command
+    approve_parser = subparsers.add_parser("approve", help="Approve a ticket")
+    approve_parser.add_argument("ticket_id", help="Ticket ID")
+    approve_parser.add_argument("--reason", default="", help="Approval reason")
+    approve_parser.set_defaults(func=cmd_approve)
+
+    # reject command
+    reject_parser = subparsers.add_parser("reject", help="Reject a ticket")
+    reject_parser.add_argument("ticket_id", help="Ticket ID")
+    reject_parser.add_argument("--reason", default="", help="Rejection reason")
+    reject_parser.set_defaults(func=cmd_reject)
 
     args = parser.parse_args()
 
@@ -561,7 +704,7 @@ Examples:
         sys.exit(1)
 
     # Ensure API key (skip for commands that don't need LLM)
-    _NO_API_KEY_COMMANDS = {"viz", "status", "list", "cancel", "recover"}
+    _NO_API_KEY_COMMANDS = {"viz", "status", "list", "cancel", "recover", "tickets", "approve", "reject"}
     if args.command not in _NO_API_KEY_COMMANDS:
         if not os.getenv("ANTHROPIC_API_KEY") and not os.getenv("ANTHROPIC_AUTH_TOKEN") and not os.getenv("OPENAI_API_KEY"):
             sys.stderr.write(json.dumps({
