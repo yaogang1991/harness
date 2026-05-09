@@ -185,13 +185,14 @@ class Guardrails:
             return GuardrailResult(decision="allowed", reason="Low risk (auto mode)")
 
         if risk == RiskLevel.MEDIUM:
-            if self.policy.auto_approve_read:
+            auto_approved_medium_tools = {"write", "edit"}
+            if self.policy.auto_approve_read and tool_name in auto_approved_medium_tools:
                 return GuardrailResult(
                     decision="allowed", reason="Medium risk (auto_approved)"
                 )
             return GuardrailResult(
                 decision="pending_approval",
-                reason="Medium risk, auto_approval disabled",
+                reason="Medium risk requires approval",
             )
 
         if risk == RiskLevel.HIGH:

@@ -542,8 +542,13 @@ async def cmd_reject(args):
     previous_status = ticket.status.value
 
     try:
-        await service.abort_after_rejection(ticket.job_id, ticket.id, reason=args.reason or "")
         ticket = repo.reject_ticket(args.ticket_id, reason=args.reason or "")
+        try:
+            await service.abort_after_rejection(ticket.job_id, ticket.id, reason=args.reason or "")
+        except ValueError as abort_error:
+            # Ticket rejection must remain valid even if job record is gone.
+            if "not found" not in str(abort_error):
+                raise
     except ValueError as e:
         sys.stderr.write(json.dumps({"error": str(e), "code": "E3003"}) + "\n")
         sys.exit(1)

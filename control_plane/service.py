@@ -434,17 +434,33 @@ class RunService:
         if reason:
             error_msg += f": {reason}"
 
-        if job.status in {JobStatus.RUNNING, JobStatus.LEASED, JobStatus.QUEUED}:
-            # Rejection is a control-plane abort, not a worker execution failure.
-            # We normalize active jobs to FAILED directly, then reuse retry policy.
-            job.status = JobStatus.FAILED
-            job.last_error = error_msg
-            job.error_category = "tool_blocked"
-            job.lease_owner = None
-            job.lease_expires_at = None
-            job = self.repository.update_job(job)
+        if job.status == JobStatus.RUNNING:
+            # Avoid racing in-flight execution. Mark it canceled and let the
+            # worker observe terminal state instead of forcing RUNNING->FAILED.
+            job = self.repository.transition_job_status(
+                job.id,
+                JobStatus.CANCELED,
+                error=error_msg,
+                error_category="tool_blocked",
+            )
+        elif job.status == JobStatus.LEASED:
+            # LEASED cannot transition directly to FAILED in repository rules.
+            job = self.repository.transition_job_status(
+                job.id,
+                JobStatus.QUEUED,
+                error=error_msg,
+                error_category="tool_blocked",
+            )
+        elif job.status == JobStatus.QUEUED:
+            job = self.repository.transition_job_status(
+                job.id,
+                JobStatus.FAILED,
+                error=error_msg,
+                error_category="tool_blocked",
+            )
 
-        job = await self.handle_job_failure(job, error_msg, "tool_blocked")
+        if job.status == JobStatus.FAILED:
+            job = await self.handle_job_failure(job, error_msg, "tool_blocked")
 
         self._emit_event("approval_rejected_abort", job_id, {
             "ticket_id": ticket_id,
