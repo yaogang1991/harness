@@ -168,6 +168,9 @@ class ApprovalRepository:
             raise ValueError(
                 f"Cannot approve ticket in status {ticket.status.value}"
             )
+        now = _utc_now()
+        if ticket.expires_at is not None and ticket.expires_at < now:
+            raise ValueError(f"Cannot approve expired ticket: {ticket_id}")
         return self._transition_status(ticket_id, TicketStatus.APPROVED, reason)
 
     def reject_ticket(self, ticket_id: str, reason: str = "") -> Ticket:
@@ -183,6 +186,9 @@ class ApprovalRepository:
             raise ValueError(
                 f"Cannot reject ticket in status {ticket.status.value}"
             )
+        now = _utc_now()
+        if ticket.expires_at is not None and ticket.expires_at < now:
+            raise ValueError(f"Cannot reject expired ticket: {ticket_id}")
         return self._transition_status(ticket_id, TicketStatus.REJECTED, reason)
 
     def expire_tickets(self) -> list[Ticket]:

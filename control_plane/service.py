@@ -113,11 +113,8 @@ class RunService:
         # M2.1/M2.2: Backend manager for isolated execution
         from backend.lifecycle import BackendManager
 
-        self.backend_manager = BackendManager(
-            default_backend=default_backend,
-            repo_root=str(Path.cwd()),
-            base_path=backend_base_path,
-        )
+        self.default_backend = default_backend
+        self.backend_base_path = backend_base_path
 
     # ------------------------------------------------------------------
     # Public API — Job lifecycle
@@ -184,12 +181,19 @@ class RunService:
         # Create Run record
         run = self.repository.create_run(job_id, session_id)
         work_dir: Path | None = None
+        project_root = Path(job.project_path).resolve() if job.project_path else Path.cwd().resolve()
+        from backend.lifecycle import BackendManager
+        backend_manager = BackendManager(
+            default_backend=self.default_backend,
+            repo_root=str(project_root),
+            base_path=self.backend_base_path,
+        )
 
         # Resolve timeout
         timeout: int = job.metadata.get("run_timeout_sec", 600)
 
         try:
-            work_dir = self.backend_manager.setup(job_id=job.id, run_id=run.id)
+            work_dir = backend_manager.setup(job_id=job.id, run_id=run.id)
 
             # --- Core execution (with task-level timeout) ---
             result_dag = await asyncio.wait_for(
@@ -243,7 +247,7 @@ class RunService:
                     job_id, JobStatus.FAILED, error=error_msg, error_category=error_cat,
                 )
                 if work_dir is not None:
-                    self.backend_manager.preserve(job.id, run.id, reason=error_cat or "failed")
+                    backend_manager.preserve(job.id, run.id, reason=error_cat or "failed")
                 job = self.repository.get_job(job_id)
                 assert job is not None
                 # Apply retry policy: FAILED -> QUEUED (retry) or DEAD_LETTER
@@ -255,7 +259,7 @@ class RunService:
                     job_id, job_status, error=error_msg, error_category=error_cat,
                 )
                 if work_dir is not None:
-                    self.backend_manager.cleanup(job.id, run.id)
+                    backend_manager.cleanup(job.id, run.id)
 
         except asyncio.TimeoutError:
             # --- Timeout handling ---
@@ -276,7 +280,7 @@ class RunService:
                 job, error="Job execution timed out", error_category="timeout",
             )
             if work_dir is not None:
-                self.backend_manager.preserve(job.id, run.id, reason="timeout")
+                backend_manager.preserve(job.id, run.id, reason="timeout")
 
         except Exception as exc:
             # --- Unexpected error handling ---
@@ -298,7 +302,7 @@ class RunService:
                 job, error=error_msg, error_category=error_cat,
             )
             if work_dir is not None:
-                self.backend_manager.preserve(job.id, run.id, reason=error_cat)
+                backend_manager.preserve(job.id, run.id, reason=error_cat)
 
         return self.repository.get_run(run.id) or run
 
@@ -426,6 +430,7 @@ class RunService:
             replan_handler=lambda dag_ref, failed_id: orchestrator.replan(
                 dag_ref, failed_id, job.requirement,
             ),
+            work_dir=work_dir,
         )
         result_dag = await engine.execute(dag)
 
@@ -445,10 +450,11 @@ class RunService:
         session_id: str,
         store: SessionStore,
         replan_handler: Any | None = None,
+        work_dir: Path | None = None,
     ) -> DAGExecutionEngine:
         """Build a DAGExecutionEngine with agent pool, failure handler, and optional replan handler."""
         registry = AgentRegistry()
-        tool_registry = ToolRegistry()
+        tool_registry = ToolRegistry(base_cwd=str(work_dir) if work_dir is not None else None)
 
         # Default guardrails: accept edits, auto-approve reads
         if getattr(self, "policy", None) is not None:

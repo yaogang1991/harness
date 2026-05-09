@@ -34,11 +34,19 @@ class ToolRegistry:
     MCP tools: dynamically loaded from MCP servers
     """
 
-    def __init__(self, sandbox_runner=None):
+    def __init__(self, sandbox_runner=None, base_cwd: str | None = None):
         self._tools: dict[str, Callable] = {}
         self._schemas: dict[str, dict] = {}
         self.sandbox_runner = sandbox_runner
+        self.base_cwd = Path(base_cwd).resolve() if base_cwd else None
         self._register_builtin_tools()
+
+    def _resolve_path(self, file_path: str) -> Path:
+        """Resolve path relative to configured base working directory."""
+        path = Path(file_path)
+        if path.is_absolute() or self.base_cwd is None:
+            return path
+        return (self.base_cwd / path).resolve()
 
     def _register_builtin_tools(self):
         self.register("read", self._tool_read, {
@@ -187,7 +195,7 @@ class ToolRegistry:
 
     def _tool_read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ToolResult:
         try:
-            path = Path(file_path)
+            path = self._resolve_path(file_path)
             if not path.exists():
                 return ToolResult(tool_call_id="", success=False, error=f"File not found: {file_path}")
 
@@ -216,7 +224,7 @@ class ToolRegistry:
 
     def _tool_write(self, file_path: str, content: str) -> ToolResult:
         try:
-            path = Path(file_path)
+            path = self._resolve_path(file_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "w") as f:
                 f.write(content)
@@ -226,7 +234,7 @@ class ToolRegistry:
 
     def _tool_edit(self, file_path: str, old_string: str, new_string: str) -> ToolResult:
         try:
-            path = Path(file_path)
+            path = self._resolve_path(file_path)
             if not path.exists():
                 return ToolResult(tool_call_id="", success=False, error=f"File not found: {file_path}")
 
@@ -254,6 +262,7 @@ class ToolRegistry:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                cwd=str(self.base_cwd) if self.base_cwd else None,
             )
             output = result.stdout
             if result.stderr:
@@ -271,7 +280,7 @@ class ToolRegistry:
 
     def _tool_glob(self, pattern: str, path: str = ".") -> ToolResult:
         try:
-            base = Path(path)
+            base = self._resolve_path(path)
             matches = list(base.rglob(pattern))
             output = "\n".join(str(m.relative_to(base)) for m in matches)
             return ToolResult(tool_call_id="", success=True, output=output or "No matches")
@@ -280,7 +289,7 @@ class ToolRegistry:
 
     def _tool_grep(self, pattern: str, path: str = ".", file_pattern: str = "*") -> ToolResult:
         try:
-            base = Path(path)
+            base = self._resolve_path(path)
             matches = []
             skipped_binary = 0
             skipped_large = 0
@@ -346,6 +355,7 @@ class ToolRegistry:
                 capture_output=True,
                 text=True,
                 timeout=60,
+                cwd=str(self.base_cwd) if self.base_cwd else None,
             )
             output = result.stdout
             if result.stderr:
