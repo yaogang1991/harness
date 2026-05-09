@@ -206,7 +206,8 @@ class RunService:
             from core.project_config import ProjectConfig
 
             harness_config = HarnessConfig.from_env()
-            project_config = ProjectConfig.load(job.project_path)
+            # Load project config from resolved project root (not job.project_path which may be None)
+            project_config = ProjectConfig.load(str(project_root))
 
             backend_manager = BackendManager(
                 workspace=WorkspaceIsolation(harness_config.workspace_isolation),
@@ -267,6 +268,7 @@ class RunService:
                 ),
                 work_dir=work_dir,
                 runtime_config=project_config.runtime,
+                guardrails_config=project_config.guardrails,
             )
             summary = engine.get_execution_summary(result_dag)
 
@@ -681,11 +683,11 @@ class RunService:
         project_context: dict[str, Any] = {}
         if project_path:
             project_context["project_path"] = project_path
-        # Inject project context from config
-        if project_config and project_config.project_context.language:
-            project_context.update(
-                project_config.project_context.model_dump(exclude_defaults=True)
-            )
+        # Inject project context from config (any non-empty field is included)
+        if project_config:
+            ctx = project_config.project_context.model_dump(exclude_defaults=True)
+            if ctx:
+                project_context.update(ctx)
         # Inject attempt context for retries
         if job.attempt > 0:
             project_context["attempt"] = job.attempt
@@ -704,6 +706,7 @@ class RunService:
             ),
             work_dir=work_dir,
             runtime_config=project_config.runtime if project_config else None,
+            guardrails_config=project_config.guardrails if project_config else None,
         )
         result_dag = await engine.execute(dag)
 
@@ -725,22 +728,31 @@ class RunService:
         replan_handler: Any | None = None,
         work_dir: Path | None = None,
         runtime_config: Any | None = None,
+        guardrails_config: Any | None = None,
     ) -> DAGExecutionEngine:
         """Build a DAGExecutionEngine with agent pool, failure handler, and optional replan handler."""
-        from core.project_config import RuntimeConfig
+        from core.project_config import RuntimeConfig, GuardrailsConfig
         rc = runtime_config or RuntimeConfig()
+        gc = guardrails_config or GuardrailsConfig()
+
+        # Use project config's max_parallel if customized, otherwise RunService default
+        effective_max_parallel = (
+            rc.max_parallel if runtime_config is not None
+            else self.max_parallel
+        )
 
         registry = AgentRegistry()
         tool_registry = ToolRegistry(base_cwd=str(work_dir) if work_dir is not None else None)
 
-        # Default guardrails: accept edits, auto-approve reads
+        # Build guardrails policy, layering project config on top of defaults
         if getattr(self, "policy", None) is not None:
             policy = self.policy
         else:
             policy = GuardrailPolicy(
-                mode=PermissionMode.ACCEPT_EDITS,
+                mode=PermissionMode(gc.approval_policy.upper()),
                 auto_approve_read=True,
                 max_iterations=self.max_iterations,
+                denied_commands=gc.denied_commands,
             )
 
         # 如果 policy 是 PersonalGuardrailPolicy，使用 PersonalGuardrails
@@ -775,7 +787,7 @@ class RunService:
             agent_executor=pool.get_executor(session_id),
             failure_handler=orchestrator.adapt_to_failure,
             replan_handler=replan_handler,
-            max_parallel=rc.max_parallel,
+            max_parallel=effective_max_parallel,
             evaluator=evaluator,
             artifact_path=self.artifact_path,
             backoff_base=rc.base_backoff_sec,

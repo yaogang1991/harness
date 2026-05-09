@@ -134,7 +134,7 @@ class BackendManager:
         ws_type = self._resolve_workspace_type(workspace_type, risk_level)
         backend = self._get_workspace_backend(ws_type)
 
-        # Check availability
+        # Check workspace availability
         if not backend.is_available():
             if ws_type == WorkspaceIsolation.WORKTREE:
                 # Worktree not available, fall back to local
@@ -143,6 +143,13 @@ class BackendManager:
                 raise RuntimeError(
                     f"Workspace backend {ws_type.value} is not available"
                 )
+
+        # Check sandbox availability (fail fast if user requested unavailable sandbox)
+        if not self._sandbox_provider.is_available():
+            raise RuntimeError(
+                f"Execution sandbox {self.sandbox_type.value} is not available. "
+                f"Please install the required dependencies or switch to 'local'."
+            )
 
         work_dir = backend.setup(job_id, run_id)
         self._active_runs[run_id] = backend
@@ -214,6 +221,12 @@ class BackendManager:
         except asyncio.TimeoutError:
             elapsed = int((time.monotonic() - start) * 1000)
             msg = f"Hook '{hook_name}' timed out after {timeout}s"
+            # Kill the subprocess to prevent resource leaks
+            try:
+                proc.kill()
+                await proc.communicate()  # Reap the process
+            except (ProcessLookupError, OSError):
+                pass
             if hook_name in ("after_create", "before_run"):
                 raise HookError(hook_name, error=msg)
             return HookResult(success=False, error=msg, duration_ms=elapsed)

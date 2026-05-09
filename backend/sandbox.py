@@ -99,6 +99,11 @@ class LocalSandbox(SandboxProvider):
             )
         except asyncio.TimeoutError:
             proc.kill()  # type: ignore[union-attr]
+            # Await process cleanup to reap child and drain pipes
+            try:
+                await proc.communicate()
+            except (ProcessLookupError, OSError):
+                pass
             return CommandResult(
                 success=False,
                 exit_code=-1,
