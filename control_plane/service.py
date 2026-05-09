@@ -260,6 +260,8 @@ class RunService:
                 )
                 run.completed_at = _utc_now()
                 self.repository.update_run(run)
+                if work_dir is not None:
+                    backend_manager.preserve(job.id, run.id, reason="external_status_change")
                 return self.repository.get_run(run.id) or run
 
             error_msg = ""
