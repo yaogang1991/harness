@@ -389,29 +389,31 @@ class RunService:
     # ------------------------------------------------------------------
 
     async def resume_after_approval(self, job_id: str, ticket_id: str) -> Run | None:
-        """
-        审批通过后恢复执行。
-
-        被 worker 或 CLI 调用，在 ticket 被 approve 后继续执行被暂停的节点。
-        """
+        """Resume a job after an approval decision by re-queuing it for workers."""
         job = self.repository.get_job(job_id)
         if not job:
             return None
 
-        # 获取关联的 run
         runs = self.repository.list_runs_by_job(job_id)
         active_runs = [r for r in runs if r.status == RunStatus.RUNNING]
-
         if not active_runs:
             return None
 
-        run = active_runs[-1]  # 取最新的 active run
+        run = active_runs[-1]
 
-        # 记录恢复事件
+        if job.status == JobStatus.RUNNING:
+            job = self.repository.transition_job_status(job.id, JobStatus.FAILED)
+            job = self.repository.transition_job_status(job.id, JobStatus.QUEUED)
+        elif job.status == JobStatus.LEASED:
+            job = self.repository.transition_job_status(job.id, JobStatus.QUEUED)
+        elif job.status != JobStatus.QUEUED:
+            return None
+
         self._emit_event("approval_resumed", job_id, {
             "ticket_id": ticket_id,
             "run_id": run.id,
             "job_id": job_id,
+            "job_status": job.status.value,
         })
 
         return run
@@ -430,15 +432,59 @@ class RunService:
         if reason:
             error_msg += f": {reason}"
 
-        if job.status in (JobStatus.LEASED, JobStatus.RUNNING, JobStatus.QUEUED):
+        if job.status == JobStatus.RUNNING:
             job = self.repository.transition_job_status(
                 job.id,
                 JobStatus.FAILED,
                 error=error_msg,
-                error_category="approval_rejected",
+                error_category="tool_blocked",
+            )
+        elif job.status == JobStatus.LEASED:
+            job = self.repository.transition_job_status(
+                job.id,
+                JobStatus.QUEUED,
+                error=error_msg,
+                error_category="tool_blocked",
+            )
+            job = self.repository.transition_job_status(
+                job.id,
+                JobStatus.LEASED,
+                error=error_msg,
+                error_category="tool_blocked",
+            )
+            job = self.repository.transition_job_status(
+                job.id,
+                JobStatus.RUNNING,
+                error=error_msg,
+                error_category="tool_blocked",
+            )
+            job = self.repository.transition_job_status(
+                job.id,
+                JobStatus.FAILED,
+                error=error_msg,
+                error_category="tool_blocked",
+            )
+        elif job.status == JobStatus.QUEUED:
+            job = self.repository.transition_job_status(
+                job.id,
+                JobStatus.LEASED,
+                error=error_msg,
+                error_category="tool_blocked",
+            )
+            job = self.repository.transition_job_status(
+                job.id,
+                JobStatus.RUNNING,
+                error=error_msg,
+                error_category="tool_blocked",
+            )
+            job = self.repository.transition_job_status(
+                job.id,
+                JobStatus.FAILED,
+                error=error_msg,
+                error_category="tool_blocked",
             )
 
-        job = await self.handle_job_failure(job, error_msg, "approval_rejected")
+        job = await self.handle_job_failure(job, error_msg, "tool_blocked")
 
         self._emit_event("approval_rejected_abort", job_id, {
             "ticket_id": ticket_id,

@@ -542,8 +542,8 @@ async def cmd_reject(args):
     previous_status = ticket.status.value
 
     try:
+        await service.abort_after_rejection(ticket.job_id, ticket.id, reason=args.reason or "")
         ticket = repo.reject_ticket(args.ticket_id, reason=args.reason or "")
-        await service.abort_after_rejection(ticket.job_id, ticket.id, reason=ticket.reason)
     except ValueError as e:
         sys.stderr.write(json.dumps({"error": str(e), "code": "E3003"}) + "\n")
         sys.exit(1)
