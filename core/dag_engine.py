@@ -345,7 +345,7 @@ class DAGExecutionEngine:
         ))
 
         try:
-            result = await self.agent_executor(node, input_artifacts)
+            result = await self._execute_with_heartbeat(node, input_artifacts)
 
             # -- Evaluation gate --
             if self.evaluator and node.success_criteria:
@@ -424,6 +424,23 @@ class DAGExecutionEngine:
             if node.health_status != NodeHealth.DEAD:
                 self._running_nodes.pop(node_id, None)
                 self._running_tasks.pop(node_id, None)
+
+    async def _execute_with_heartbeat(
+        self,
+        node: DAGNode,
+        input_artifacts: list[HandoffArtifact],
+    ) -> dict[str, Any]:
+        """Execute a node while periodically refreshing heartbeat."""
+        task = asyncio.create_task(self.agent_executor(node, input_artifacts))
+        heartbeat_interval = max(1.0, self.heartbeat_interval_sec)
+
+        while not task.done():
+            try:
+                return await asyncio.wait_for(task, timeout=heartbeat_interval)
+            except asyncio.TimeoutError:
+                node.record_heartbeat()
+
+        return await task
 
     def _collect_input_artifacts(self, dag: DAG, node_id: str) -> list[HandoffArtifact]:
         """Collect output artifacts from all dependency nodes."""

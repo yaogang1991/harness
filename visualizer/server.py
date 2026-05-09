@@ -25,7 +25,7 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 
@@ -251,7 +251,7 @@ async def api_get_job(job_id: str):
     repo = JobRepository()
     job = repo.get_job(job_id)
     if not job:
-        return {"error": "Job not found"}, 404
+        raise HTTPException(status_code=404, detail="Job not found")
 
     runs = repo.list_runs_by_job(job_id)
     return {
@@ -285,7 +285,7 @@ async def api_cancel_job(job_id: str):
         job = repo.transition_job_status(job_id, JobStatus.CANCELED)
         return {"job_id": job.id, "status": job.status.value, "message": "Job canceled"}
     except ValueError as e:
-        return {"error": str(e)}, 400
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/jobs/{job_id}/retry")
@@ -294,9 +294,12 @@ async def api_retry_job(job_id: str):
     repo = JobRepository()
     job = repo.get_job(job_id)
     if not job:
-        return {"error": "Job not found"}, 404
+        raise HTTPException(status_code=404, detail="Job not found")
     if job.status not in (JobStatus.FAILED, JobStatus.DEAD_LETTER):
-        return {"error": f"Cannot retry job in status {job.status.value}"}, 400
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot retry job in status {job.status.value}",
+        )
 
     job.status = JobStatus.QUEUED
     job.attempt = 0

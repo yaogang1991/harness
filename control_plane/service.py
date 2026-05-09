@@ -115,6 +115,7 @@ class RunService:
 
         self.backend_manager = BackendManager(
             default_backend=default_backend,
+            repo_root=str(Path.cwd()),
             base_path=backend_base_path,
         )
 
@@ -182,6 +183,7 @@ class RunService:
 
         # Create Run record
         run = self.repository.create_run(job_id, session_id)
+        work_dir = self.backend_manager.setup(job_id=job.id, run_id=run.id)
 
         # Resolve timeout
         timeout: int = job.metadata.get("run_timeout_sec", 600)
@@ -189,7 +191,7 @@ class RunService:
         try:
             # --- Core execution (with task-level timeout) ---
             result_dag = await asyncio.wait_for(
-                self._execute_plan_and_run(job, session_id, store),
+                self._execute_plan_and_run(job, session_id, store, work_dir),
                 timeout=timeout,
             )
 
@@ -238,6 +240,7 @@ class RunService:
                 self.repository.transition_job_status(
                     job_id, JobStatus.FAILED, error=error_msg, error_category=error_cat,
                 )
+                self.backend_manager.preserve(job.id, run.id, reason=error_cat or "failed")
                 job = self.repository.get_job(job_id)
                 assert job is not None
                 # Apply retry policy: FAILED -> QUEUED (retry) or DEAD_LETTER
@@ -248,6 +251,7 @@ class RunService:
                 self.repository.transition_job_status(
                     job_id, job_status, error=error_msg, error_category=error_cat,
                 )
+                self.backend_manager.cleanup(job.id, run.id)
 
         except asyncio.TimeoutError:
             # --- Timeout handling ---
@@ -267,6 +271,7 @@ class RunService:
             job = await self.handle_job_failure(
                 job, error="Job execution timed out", error_category="timeout",
             )
+            self.backend_manager.preserve(job.id, run.id, reason="timeout")
 
         except Exception as exc:
             # --- Unexpected error handling ---
@@ -287,6 +292,7 @@ class RunService:
             job = await self.handle_job_failure(
                 job, error=error_msg, error_category=error_cat,
             )
+            self.backend_manager.preserve(job.id, run.id, reason=error_cat)
 
         return self.repository.get_run(run.id) or run
 
@@ -392,6 +398,7 @@ class RunService:
         job: Job,
         session_id: str,
         store: SessionStore,
+        work_dir: Path,
     ) -> Any:
         """
         Plan a DAG and execute it.
@@ -400,7 +407,8 @@ class RunService:
         """
         # 1. Create orchestrator and plan DAG
         orchestrator = self._create_orchestrator(store)
-        project_context = {"project_path": job.project_path} if job.project_path else None
+        project_path = str(work_dir)
+        project_context = {"project_path": project_path}
         dag = await orchestrator.plan(
             requirement=job.requirement,
             project_context=project_context,
