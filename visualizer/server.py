@@ -193,11 +193,17 @@ def _reconstruct_dag_from_events(events: list[dict]) -> dict | None:
     Attempt to reconstruct a DAG from session events.
     Looks for DAG structure in plan files or session payloads.
     """
-    # Look for plan references in events
+    # Look for DAG stored via session.dag event
+    for event in events:
+        if event.get("type") == "session.dag":
+            payload = event.get("payload", {})
+            if isinstance(payload, dict) and "nodes" in payload and "edges" in payload:
+                return payload
+    
+    # Fallback: check any event payload for DAG-like data
     for event in events:
         payload = event.get("payload", {})
         if isinstance(payload, dict):
-            # Check if payload contains DAG-like data
             if "nodes" in payload and "edges" in payload:
                 return payload
     
@@ -623,6 +629,62 @@ async def api_learning_status():
     """Get learning system status."""
     scheduler = _get_learning_scheduler()
     return scheduler.get_status()
+
+
+# ── Template API (M3.4) ────────────────────────────────────────────
+
+
+class TemplateInstantiateRequest(PydanticModel):
+    variables: dict[str, str] = {}
+
+    class Config:
+        extra = "forbid"
+
+
+@app.get("/api/templates")
+async def api_list_templates():
+    """List available DAG templates."""
+    from templates.library import TemplateRegistry
+    registry = TemplateRegistry()
+    templates = registry.list_templates()
+    return {
+        "templates": [
+            {
+                "name": t.name,
+                "description": t.description,
+                "version": t.version,
+                "category": t.category,
+                "nodes": len(t.nodes),
+                "edges": len(t.edges),
+                "variables": list(t.variables.keys()),
+            }
+            for t in templates
+        ],
+        "count": len(templates),
+    }
+
+
+@app.post("/api/templates/{name}/instantiate")
+async def api_instantiate_template(name: str, request: TemplateInstantiateRequest):
+    """Instantiate a template with variable substitution."""
+    from templates.library import TemplateRegistry
+    registry = TemplateRegistry()
+    try:
+        dag = registry.instantiate(name, request.variables)
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
+    return {
+        "nodes": [{
+            "id": n.id,
+            "agent_type": n.agent_type,
+            "task": n.task_description,
+        } for n in dag.nodes.values()],
+        "edges": [{"from": e.from_node, "to": e.to_node} for e in dag.edges],
+        "reasoning": dag.reasoning,
+    }
 
 
 # ── Integration helpers ──────────────────────────────────────────────
