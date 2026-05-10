@@ -131,8 +131,7 @@ class TestBackendContract:
     def test_preserve_does_not_raise(self, backend, tmp_path):
         """preserve() must handle gracefully even for non-existent paths."""
         result = backend.preserve("nonexistent-job", "nonexistent-run", reason="test")
-        # LocalBackend with no repo_root will return a path
-        # WorktreeBackend may return a path too
+        # Should return None or Path, not raise
         assert result is None or isinstance(result, Path)
 
     # -- idempotency --
@@ -314,3 +313,33 @@ class TestCleanupPolicyContract:
         result = manager.finalize("job-1", "run-1", success=True)
         assert result is not None
         assert result.exists()
+
+
+# ---------------------------------------------------------------------------
+# Config validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupPolicyValidation:
+    """Verify cleanup_policy validation in HarnessConfig."""
+
+    def test_valid_policies_accepted(self):
+        """All valid policy values should be accepted."""
+        from core.config import HarnessConfig
+        for policy in ("always", "on_success", "never"):
+            config = HarnessConfig(cleanup_policy=policy)
+            assert config.cleanup_policy == policy
+
+    def test_invalid_policy_rejected(self):
+        """Invalid policy values should be rejected by Pydantic."""
+        from core.config import HarnessConfig
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            HarnessConfig(cleanup_policy="invalid_policy")
+
+    def test_typo_rejected(self):
+        """Typos should be caught (e.g., 'Always' vs 'always')."""
+        from core.config import HarnessConfig
+        import pydantic
+        with pytest.raises(pydantic.ValidationError):
+            HarnessConfig(cleanup_policy="Always")

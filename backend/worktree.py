@@ -100,8 +100,10 @@ class WorktreeBackend(ExecutionBackend):
                 f"Preserved at: {datetime.now(timezone.utc).isoformat()}\n"
                 f"Reason: {reason}\n"
             )
+            return worktree_path
 
-        return worktree_path
+        # Directory does not exist — nothing to preserve
+        return None
 
     def is_available(self) -> bool:
         """Check if git worktree is available."""

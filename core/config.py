@@ -86,7 +86,8 @@ class HarnessConfig(BaseModel):
     cleanup_policy: str = Field(
         default_factory=lambda: os.getenv(
             "HARNESS_CLEANUP_POLICY", "on_success"
-        )
+        ),
+        pattern=r"^(always|on_success|never)$",
     )
 
     @classmethod

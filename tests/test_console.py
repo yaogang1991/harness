@@ -39,19 +39,19 @@ class TestJobsAPI:
             assert job["status"] == "queued"
 
     def test_cancel_nonexistent_job(self):
-        """M2-D: Cancel API should handle nonexistent job gracefully."""
+        """M2-D: Cancel API should return error for nonexistent job."""
         resp = client.post("/api/jobs/nonexistent-job-id/cancel")
-        # Should return error response, not 500
-        assert resp.status_code in (200, 400, 404)
+        # Should return error, not 200 (success would hide regression)
+        assert resp.status_code in (400, 404)
         data = resp.json()
-        assert "error" in data or "message" in data or "detail" in data
+        assert "error" in data or "detail" in data
 
     def test_retry_nonexistent_job(self):
-        """M2-D: Retry API should handle nonexistent job gracefully."""
+        """M2-D: Retry API should return error for nonexistent job."""
         resp = client.post("/api/jobs/nonexistent-job-id/retry")
-        assert resp.status_code in (200, 400, 404)
+        assert resp.status_code in (400, 404)
         data = resp.json()
-        assert "error" in data or "message" in data or "detail" in data
+        assert "error" in data or "detail" in data
 
 
 class TestTicketsAPI:
@@ -63,21 +63,21 @@ class TestTicketsAPI:
         assert "stats" in data
 
     def test_approve_nonexistent_ticket(self):
-        """M2-D: Approve API should handle nonexistent ticket."""
+        """M2-D: Approve API should return error for nonexistent ticket."""
         resp = client.post("/api/tickets/nonexistent-ticket-id/approve")
-        assert resp.status_code in (200, 400, 404)
+        assert resp.status_code in (400, 404)
         data = resp.json()
-        assert "error" in data or "message" in data or "detail" in data
+        assert "error" in data or "detail" in data
 
     def test_reject_nonexistent_ticket(self):
-        """M2-D: Reject API should handle nonexistent ticket."""
+        """M2-D: Reject API should return error for nonexistent ticket."""
         resp = client.post(
             "/api/tickets/nonexistent-ticket-id/reject",
             json={"reason": "test"},
         )
-        assert resp.status_code in (200, 400, 404)
+        assert resp.status_code in (400, 404)
         data = resp.json()
-        assert "error" in data or "message" in data or "detail" in data
+        assert "error" in data or "detail" in data
 
 
 class TestMetricsAPI:
