@@ -41,6 +41,7 @@ class BackendManager:
         repo_root: str | None = None,
         base_path: str = "./data/backends",
         risk_backend_map: dict[str, str] | None = None,
+        cleanup_policy: str = "on_success",
     ):
         self.default_backend_type = BackendType(default_backend)
         self.repo_root = repo_root
@@ -51,6 +52,7 @@ class BackendManager:
             "high": "worktree",
             "critical": "worktree",
         }
+        self.cleanup_policy = cleanup_policy
         self._backends: dict[str, ExecutionBackend] = {}
         self._active_runs: dict[str, ExecutionBackend] = {}  # run_id -> backend
 
@@ -117,6 +119,9 @@ class BackendManager:
 
     def cleanup(self, job_id: str, run_id: str) -> None:
         """Clean up execution environment (on success)."""
+        if self.cleanup_policy == "never":
+            self.preserve(job_id, run_id, reason="cleanup_policy=never")
+            return
         backend = self._active_runs.pop(run_id, None)
         if backend:
             backend.cleanup(job_id, run_id)
@@ -125,10 +130,41 @@ class BackendManager:
         self, job_id: str, run_id: str, reason: str = ""
     ) -> Path | None:
         """Preserve execution scene (on failure)."""
+        if self.cleanup_policy == "always":
+            backend = self._active_runs.pop(run_id, None)
+            if backend:
+                backend.cleanup(job_id, run_id)
+            return None
         backend = self._active_runs.pop(run_id, None)
         if backend:
             return backend.preserve(job_id, run_id, reason)
         return None
+
+    def finalize(
+        self, job_id: str, run_id: str, success: bool, reason: str = ""
+    ) -> Path | None:
+        """
+        Finalize a run based on outcome and cleanup_policy.
+
+        Args:
+            job_id: Task ID
+            run_id: Run ID
+            success: Whether the run succeeded
+            reason: Reason if failed
+
+        Returns:
+            Preserved path if preserved, None if cleaned up.
+        """
+        if success:
+            if self.cleanup_policy == "never":
+                return self.preserve(job_id, run_id, reason="success_but_never_policy")
+            self.cleanup(job_id, run_id)
+            return None
+        else:
+            if self.cleanup_policy == "always":
+                self.cleanup(job_id, run_id)
+                return None
+            return self.preserve(job_id, run_id, reason=reason)
 
     def _resolve_backend_type(
         self,

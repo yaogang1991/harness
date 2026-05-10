@@ -81,6 +81,14 @@ class HarnessConfig(BaseModel):
         default_factory=lambda: int(os.getenv("HARNESS_APPROVAL_TIMEOUT_SEC", "300"))
     )
 
+    # M2: Cleanup policy for execution backends
+    # "always" = always cleanup, "on_success" = preserve on failure, "never" = always preserve
+    cleanup_policy: str = Field(
+        default_factory=lambda: os.getenv(
+            "HARNESS_CLEANUP_POLICY", "on_success"
+        )
+    )
+
     @classmethod
     def from_yaml(cls, path: str | Path) -> HarnessConfig:
         with open(path, "r") as f:
