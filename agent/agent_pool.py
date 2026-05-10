@@ -19,10 +19,12 @@ from core.models import DAGNode, HandoffArtifact, AgentCapability
 from core.config import LLMConfig
 from core.agent_registry import AgentRegistry
 from core.llm_router import LLMRouter
+from core.exceptions import PendingApprovalError
 from session.store import SessionStore
 from agent.worker import AgentWorker
 from tools.registry import ToolRegistry
-from guardrails.policy import Guardrails
+from guardrails.policy import Guardrails, GuardrailResult
+from core.models import ToolResult
 
 
 class WorkerAgent:
@@ -112,6 +114,8 @@ Evaluate against:
         timeout: int = 120,
         max_context_tokens: int = 100_000,
         memory_manager: Any | None = None,
+        job_id: str = "",
+        approval_repo: Any | None = None,
     ):
         self.capability = capability
         self.llm_config = llm_config
@@ -121,6 +125,12 @@ Evaluate against:
         self.max_iterations = max_iterations
         self.timeout = timeout
         self.memory_manager = memory_manager
+        self.job_id = job_id
+        self.approval_repo = approval_repo
+
+        # Dynamic execution context — set per node execution
+        self._current_run_id: str | None = None
+        self._current_node_id: str | None = None
 
         # Build agent-specific system prompt
         system_prompt = capability.system_prompt or self.SYSTEM_PROMPTS.get(
@@ -135,10 +145,36 @@ Evaluate against:
         allowed = self.TOOL_ALLOWLIST.get(capability.id, {"read", "glob", "grep"})
         self.tools = [s for s in tool_registry.schemas if s["name"] in allowed]
 
-    def _execute_tool(self, name: str, arguments: dict):
-        """Execute a tool through guardrails if available, otherwise directly."""
+    def _execute_tool(self, name: str, arguments: dict) -> ToolResult:
+        """Execute a tool through guardrails with approval context.
+
+        Uses check_and_execute() which:
+        - Returns ToolResult when allowed (executed) or blocked
+        - Returns GuardrailResult when pending_approval (ticket created)
+        When pending_approval, raises PendingApprovalError to propagate up
+        through DAGEngine → RunService → Worker.
+        """
         if self.guardrails:
-            return self.guardrails.guarded_execute(name, arguments)
+            result = self.guardrails.check_and_execute(
+                name, arguments,
+                job_id=self.job_id,
+                run_id=self._current_run_id,
+                approval_repo=self.approval_repo,
+                node_id=self._current_node_id,
+            )
+            if isinstance(result, GuardrailResult):
+                if result.is_pending:
+                    raise PendingApprovalError(
+                        ticket_id=result.ticket_id or "",
+                        guardrail_result=result,
+                    )
+                # Blocked
+                return ToolResult(
+                    tool_call_id="",
+                    success=False,
+                    error=f"Blocked by guardrails: {result.reason}",
+                )
+            return result  # ToolResult from successful execution
         return self.tool_registry.execute(name, arguments)
 
     async def execute(
@@ -147,6 +183,7 @@ Evaluate against:
         input_artifacts: list[HandoffArtifact],
         session_id: str,
         node_id: str | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Execute this agent's task with isolated context.
@@ -154,6 +191,24 @@ Evaluate against:
         Context isolation: Each execution starts fresh - previous
         executions do not pollute the context window.
         """
+        # Set dynamic execution context for tool execution
+        self._current_run_id = run_id
+        self._current_node_id = node_id
+
+        try:
+            return await self._execute_inner(task, input_artifacts, session_id, node_id)
+        finally:
+            self._current_run_id = None
+            self._current_node_id = None
+
+    async def _execute_inner(
+        self,
+        task: str,
+        input_artifacts: list[HandoffArtifact],
+        session_id: str,
+        node_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Internal execute implementation."""
         # Build context from input artifacts
         artifact_context = self._format_artifacts(input_artifacts)
 
@@ -281,6 +336,8 @@ class AgentPool:
         max_context_tokens: int = 100_000,
         llm_router: LLMRouter | None = None,
         memory_manager: Any | None = None,
+        job_id: str = "",
+        approval_repo: Any | None = None,
     ):
         self.llm_config = llm_config
         self.session_store = session_store
@@ -292,6 +349,8 @@ class AgentPool:
         self.max_context_tokens = max_context_tokens
         self.llm_router = llm_router
         self.memory_manager = memory_manager
+        self.job_id = job_id
+        self.approval_repo = approval_repo
         self._instances: dict[str, WorkerAgent] = {}
 
     def _is_api_error(self, exc: Exception) -> bool:

@@ -45,6 +45,7 @@ class NodeStatus(str, Enum):
     FAILED = "failed"
     SKIPPED = "skipped"
     RETRYING = "retrying"
+    PENDING_APPROVAL = "pending_approval"
 
 
 class NodeHealth(str, Enum):
