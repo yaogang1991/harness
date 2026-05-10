@@ -7,7 +7,6 @@ Used by the orchestrator and agents to inject project knowledge into system prom
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
@@ -189,7 +188,8 @@ class KnowledgeIndex:
             "build", "add", "create", "make", "get", "set", "use", "using",
             "implement", "need", "want", "like", "new", "also", "into",
         }
-        words = re.findall(r"[a-zA-Z_]+", text.lower())
+        # Match Latin words (a-zA-Z_) and CJK characters (Unicode ranges)
+        words = re.findall(r"[a-zA-Z_]+|[\u4e00-\u9fff\u3400-\u4dbf]+", text.lower())
         return [w for w in words if w not in stop_words and len(w) > 2]
 
     def get_relevant_context(
@@ -268,6 +268,19 @@ class KnowledgeIndex:
                 break
 
         if not result_parts:
-            return "# No relevant documentation found for this task."
+            # Fallback: return top SPECs by recency when no keyword match
+            fallback_count = 0
+            for name, content in self._specs.items():
+                if fallback_count >= 3:
+                    break
+                title = f"## Module SPEC: {name}"
+                section = f"{title}\n{content}"
+                section_tokens = self._estimate_tokens(section)
+                if section_tokens <= remaining_tokens:
+                    result_parts.append(section)
+                    remaining_tokens -= section_tokens
+                    fallback_count += 1
+            if not result_parts:
+                return "# No relevant documentation found for this task."
 
         return "\n\n---\n\n".join(result_parts)
