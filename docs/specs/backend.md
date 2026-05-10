@@ -12,19 +12,25 @@ Sources: `backend/base.py`, `backend/local.py`, `backend/worktree.py`, `backend/
 
 ### base.py
 
-#### Enum: `BackendType(str, Enum)`
+#### Enum: `WorkspaceIsolation(str, Enum)`
 
 | Value | Description |
 |---|---|
 | `LOCAL` | Execute directly in the main repo directory. |
 | `WORKTREE` | Execute in an isolated git worktree. |
-| `DOCKER` | Execute in a Docker container (reserved for future implementation). |
+
+#### Enum: `ExecutionSandbox(str, Enum)`
+
+| Value | Description |
+|---|---|
+| `LOCAL` | Host process (current default). |
+| `DOCKER` | Docker container (reserved). |
 
 #### Abstract class: `ExecutionBackend(abc.ABC)`
 
 ```python
 class ExecutionBackend(abc.ABC):
-    backend_type: BackendType
+    workspace_type: WorkspaceIsolation
 
     def __init__(
         self,
@@ -117,18 +123,22 @@ This is a placeholder for future container-based isolation.
 class BackendManager:
     def __init__(
         self,
-        default_backend: str = "local",
+        workspace: WorkspaceIsolation | str = WorkspaceIsolation.LOCAL,
+        sandbox: ExecutionSandbox | str = ExecutionSandbox.LOCAL,
         repo_root: str | None = None,
         base_path: str = "./data/backends",
-        risk_backend_map: dict[str, str] | None = None,
+        workspace_by_risk: dict[str, str] | None = None,
+        cleanup_policy: str = "on_success",
     )
 ```
 
 **Constructor fields:**
-- `default_backend_type: BackendType` -- Resolved from `default_backend` string.
+- `workspace_type: WorkspaceIsolation` -- Resolved from `workspace` parameter.
+- `sandbox_type: ExecutionSandbox` -- Resolved from `sandbox` parameter.
 - `repo_root: str | None` -- Repository root path.
 - `base_path: str` -- Base directory for backend data.
-- `risk_backend_map: dict[str, str]` -- Risk level to backend type mapping. Default: `{"low": "local", "medium": "local", "high": "worktree", "critical": "worktree"}`.
+- `workspace_by_risk: dict[str, str]` -- Risk level to workspace type mapping. Default: `{"low": "local", "medium": "local", "high": "worktree", "critical": "worktree"}`.
+- `cleanup_policy: str` -- Cleanup behavior: `"always"`, `"on_success"`, or `"never"`.
 - `_backends: dict[str, ExecutionBackend]` -- Cached backend instances by type string.
 - `_active_runs: dict[str, ExecutionBackend]` -- Map of `run_id` to the backend handling it.
 

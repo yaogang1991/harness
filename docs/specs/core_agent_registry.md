@@ -67,7 +67,7 @@ Discovery:
   Orchestrator -> get(agent_id) -> retrieves capability for DAG node creation
 
 Execution:
-  DAG engine -> get_factory(agent_id) -> factory(task_desc, artifacts) -> agent instance
+  DAG engine -> AgentPool.get_or_create(agent_type) -> WorkerAgent(capability) -> agent instance
 ```
 
 ## Error Codes

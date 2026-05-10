@@ -63,18 +63,16 @@ The orchestrator automatically discovers agents via `AgentRegistry.to_prompt_des
 
 ### 1. Implement the tool function
 
-Edit `tools/registry.py`. Tool functions receive `(params: dict)` and return `ToolResult`:
+Edit `tools/registry.py`. Tool functions are called with `**kwargs` (each argument from the tool call) and should return a string or `ToolResult`:
 
 ```python
-def _tool_search_code(params: dict) -> ToolResult:
+def _tool_search_code(pattern: str, path: str = ".") -> str:
     """Search code using regex patterns."""
-    pattern = params.get("pattern", "")
-    path = params.get("path", ".")
     try:
         # ... implementation ...
-        return ToolResult(success=True, output=result_text)
+        return result_text
     except Exception as e:
-        return ToolResult(success=False, error=str(e))
+        return f"Error: {e}"
 ```
 
 ### 2. Register in ToolRegistry
@@ -114,45 +112,41 @@ Create a new file in `backend/`, extending `ExecutionBackend`:
 from backend.base import ExecutionBackend
 
 class MyBackend(ExecutionBackend):
-    async def setup(self, job_id: str, run_id: str, config: dict) -> str:
+    def setup(self, job_id: str, run_id: str) -> Path:
         """Set up the execution environment. Returns work directory path."""
         ...
 
-    def get_work_dir(self) -> str:
+    def get_work_dir(self, job_id: str, run_id: str) -> Path:
         """Return the current working directory for agent tools."""
         ...
 
-    async def cleanup(self) -> None:
+    def cleanup(self, job_id: str, run_id: str) -> None:
         """Clean up after successful execution."""
         ...
 
-    async def preserve(self) -> str:
+    def preserve(self, job_id: str, run_id: str, reason: str = "") -> Path | None:
         """Preserve the environment for debugging. Returns archive path."""
-        ...
-
-    def is_available(self) -> bool:
-        """Check if this backend can be used."""
         ...
 ```
 
 ### 2. Register in BackendManager
 
-Edit `backend/lifecycle.py` — add to the backend registry:
+Edit `backend/lifecycle.py` — add your backend to `_get_workspace_backend()`:
 
 ```python
 from backend.my_backend import MyBackend
 
-class BackendManager:
-    BACKEND_TYPES = {
-        "local": LocalBackend,
-        "worktree": WorktreeBackend,
-        "my_backend": MyBackend,  # Add here
-    }
+def _get_workspace_backend(self, ws_type: WorkspaceIsolation) -> ExecutionBackend:
+    if ws_type == WorkspaceIsolation.WORKTREE:
+        ...
+    elif ws_type == WorkspaceIsolation.LOCAL:
+        ...
+    return backend
 ```
 
 ### 3. Configure
 
-Set `HARNESS_DEFAULT_BACKEND=my_backend` or add to risk mapping.
+Add a new `WorkspaceIsolation` enum value or map risk levels in `workspace_by_risk`. Note: `HARNESS_DEFAULT_BACKEND` only accepts `local` or `worktree` (the built-in `WorkspaceIsolation` values).
 
 ---
 
