@@ -180,17 +180,22 @@ Key event types to look for:
 
 ### 3. Check node error details
 
-Failed nodes store error info in the DAG execution result. Use `--detail` flag:
+Failed nodes store error info in the DAG execution result. Check the event log for details:
 
 ```bash
-python main.py status <job_id> --detail
+python main.py status <job_id>
 ```
 
 ### 4. Inspect dead-letter jobs
 
 ```bash
 python main.py list --status dead_letter
-cat ./data/queue/dead/<job_id>.json | python -m json.tool
+```
+
+Dead-letter jobs are stored in `./data/jobs/` with status `dead_letter`. To inspect:
+
+```bash
+cat ./data/jobs/<job_id>.json | python -m json.tool
 ```
 
 Dead letter files contain: original requirement, failure history, last error, attempt count.
