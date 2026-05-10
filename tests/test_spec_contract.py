@@ -169,7 +169,7 @@ class TestJobStatusEnum:
     """验证 JobStatus 枚举完整（对应 spec Part 2）。"""
 
     REQUIRED_STATUSES = [
-        "queued", "leased", "running", "succeeded", "failed",
+        "queued", "leased", "running", "pending_approval", "succeeded", "failed",
         "canceled", "dead_letter",
     ]
 
@@ -194,7 +194,7 @@ class TestJobStatusEnum:
 class TestRunStatusEnum:
     """验证 RunStatus 枚举完整。"""
 
-    REQUIRED_STATUSES = ["running", "succeeded", "failed", "aborted", "timed_out"]
+    REQUIRED_STATUSES = ["running", "pending_approval", "succeeded", "failed", "aborted", "timed_out"]
 
     def test_all_statuses_exist(self):
         from control_plane.models import RunStatus

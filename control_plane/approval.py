@@ -379,6 +379,30 @@ class ApprovalRepository:
         """Return all pending tickets for a given job."""
         return self.list_tickets(status=TicketStatus.PENDING, job_id=job_id)
 
+    def find_approved_ticket(
+        self,
+        job_id: str,
+        tool_name: str,
+        args: dict[str, Any],
+        node_id: str | None = None,
+    ) -> ApprovalTicket | None:
+        """Find a matching approved ticket for the same tool call.
+
+        Matching is by job_id + tool_name + args_hash.
+        run_id is NOT used for matching because re-running a job creates a new run_id.
+        node_id is used as a weak match (only if both sides have it).
+        """
+        args_hash = _compute_args_hash(args)
+        for ticket in self.list_tickets(status=TicketStatus.APPROVED, job_id=job_id):
+            if ticket.tool_name != tool_name:
+                continue
+            if ticket.args_hash != args_hash:
+                continue
+            if node_id is not None and ticket.node_id is not None and ticket.node_id != node_id:
+                continue
+            return ticket
+        return None
+
     def get_stats(self) -> dict[str, int]:
         """Return count of tickets in each status.
 

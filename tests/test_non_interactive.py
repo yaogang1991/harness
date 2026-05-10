@@ -294,6 +294,7 @@ class TestCheckAndExecuteNonInteractive:
     def test_pending_approval_creates_ticket(self, personal_policy, mock_tool_registry):
         """Non-interactive with approval_repo: pending_approval creates ticket."""
         approval_repo = MagicMock()
+        approval_repo.find_approved_ticket = MagicMock(return_value=None)
         ticket_mock = MagicMock()
         ticket_mock.id = "ticket_abc123"
         approval_repo.create_ticket = MagicMock(return_value=ticket_mock)

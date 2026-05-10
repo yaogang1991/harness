@@ -338,6 +338,7 @@ class AgentPool:
         memory_manager: Any | None = None,
         job_id: str = "",
         approval_repo: Any | None = None,
+        run_id: str | None = None,
     ):
         self.llm_config = llm_config
         self.session_store = session_store
@@ -351,6 +352,7 @@ class AgentPool:
         self.memory_manager = memory_manager
         self.job_id = job_id
         self.approval_repo = approval_repo
+        self.run_id = run_id
         self._instances: dict[str, WorkerAgent] = {}
 
     def _is_api_error(self, exc: Exception) -> bool:
@@ -384,6 +386,8 @@ class AgentPool:
                 timeout=self.timeout,
                 max_context_tokens=self.max_context_tokens,
                 memory_manager=self.memory_manager,
+                job_id=self.job_id,
+                approval_repo=self.approval_repo,
             )
 
         return self._instances[agent_type]
@@ -405,20 +409,24 @@ class AgentPool:
                 return await worker.execute(
                     node.task_description, artifacts, session_id,
                     node_id=node.id,
+                    run_id=self.run_id,
                 )
             except Exception as exc:
                 if not self.llm_router or not self._is_api_error(exc):
                     raise
 
-                # Walk the fallback chain
+                # Walk the fallback chain, tracking attempted models to prevent cycles
                 failed_model = worker.llm_config.model
+                attempted: set[str] = {failed_model}
+                last_exc = exc
                 while True:
                     fallback = self.llm_router.get_fallback_client(failed_model)
-                    if fallback is None:
-                        raise
+                    if fallback is None or fallback.config.model in attempted:
+                        raise last_exc
+                    attempted.add(fallback.config.model)
                     _log.warning(
                         "Model %s failed (%s), trying fallback %s",
-                        failed_model, exc, fallback.config.model,
+                        failed_model, last_exc, fallback.config.model,
                     )
                     capability = self.agent_registry.get(node.agent_type)
                     fallback_worker = WorkerAgent(
@@ -430,15 +438,20 @@ class AgentPool:
                         max_iterations=self.max_iterations,
                         timeout=self.timeout,
                         max_context_tokens=self.max_context_tokens,
+                        memory_manager=self.memory_manager,
+                        job_id=self.job_id,
+                        approval_repo=self.approval_repo,
                     )
                     try:
                         return await fallback_worker.execute(
                             node.task_description, artifacts, session_id,
                             node_id=node.id,
+                            run_id=self.run_id,
                         )
                     except Exception as retry_exc:
                         if not self._is_api_error(retry_exc):
                             raise
+                        last_exc = retry_exc
                         failed_model = fallback.config.model
                         continue
 

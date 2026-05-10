@@ -40,6 +40,7 @@ from control_plane.repository import JobRepository
 from control_plane.service import RunService
 from control_plane.models import Job, JobStatus, RunStatus
 from control_plane.approval import TicketStatus
+from core.exceptions import PendingApprovalError
 
 # ---------------------------------------------------------------------------
 # Logging helpers — JSON Lines on stderr
@@ -277,6 +278,35 @@ class TaskWorker:
                         "reason": "lease_expired",
                         "recovered_at": datetime.now(timezone.utc).isoformat(),
                     })
+                # PENDING_APPROVAL orphan: check ticket status
+                elif job.status == JobStatus.PENDING_APPROVAL:
+                    approval_repo = getattr(self.run_service, "approval_repo", None)
+                    if approval_repo:
+                        pending_tickets = await asyncio.to_thread(
+                            approval_repo.get_pending_for_job, job.id,
+                        )
+                        if pending_tickets:
+                            # Still has pending tickets — keep in PENDING_APPROVAL
+                            _json_log(
+                                "INFO",
+                                "PENDING_APPROVAL job still has pending tickets",
+                                job_id=job.id,
+                                status=JobStatus.PENDING_APPROVAL.value,
+                            )
+                        else:
+                            # No pending tickets — mark as failed for retry
+                            await asyncio.to_thread(
+                                self.repository.transition_job_status,
+                                job.id, JobStatus.FAILED,
+                                error="Worker crashed while awaiting approval",
+                                error_category="unknown",
+                            )
+                            _json_log(
+                                "INFO",
+                                "PENDING_APPROVAL orphan marked failed (no pending tickets)",
+                                job_id=job.id,
+                                status=JobStatus.FAILED.value,
+                            )
                 recovered.append(job.id)
             except Exception as exc:
                 _json_log(
@@ -585,6 +615,57 @@ class TaskWorker:
                 pass
             raise  # Re-raise so asyncio knows the task was cancelled.
 
+        except PendingApprovalError as exc:
+            # Agent hit a high-risk tool — pause and wait for approval.
+            await asyncio.to_thread(
+                self.repository.transition_job_status,
+                job_id, JobStatus.PENDING_APPROVAL,
+            )
+            _json_log(
+                "INFO",
+                f"Job paused for approval (ticket: {exc.ticket_id})",
+                job_id=job_id,
+                status=JobStatus.PENDING_APPROVAL.value,
+                extra={"ticket_id": exc.ticket_id},
+            )
+
+            # Poll for approval decision
+            final_status = await self._poll_for_approval(job_id, exc.ticket_id)
+
+            if final_status == JobStatus.RUNNING:
+                # Approval granted — re-execute the job.
+                # The approved tool call will be recognized by
+                # Guardrails.check_and_execute() via find_approved_ticket().
+                _json_log(
+                    "INFO",
+                    f"Approval granted, resuming job",
+                    job_id=job_id,
+                    status=JobStatus.RUNNING.value,
+                )
+                try:
+                    run = await self.run_service.run_job(job_id)
+                    if run.status == RunStatus.SUCCEEDED:
+                        await asyncio.to_thread(
+                            self.repository.transition_job_status,
+                            job_id, JobStatus.SUCCEEDED,
+                        )
+                        _json_log(
+                            "INFO", "Job completed after approval",
+                            job_id=job_id, status=JobStatus.SUCCEEDED.value,
+                        )
+                    else:
+                        await self._handle_failure(
+                            job_id,
+                            f"Run ended with status {run.status.value}",
+                            "unknown",
+                        )
+                except Exception as exc2:
+                    error_msg = str(exc2)
+                    error_category = self._classify_error(exc2)
+                    _json_log("ERROR", f"Post-approval execution failed: {error_msg}",
+                              job_id=job_id, extra={"error_category": error_category})
+                    await self._handle_failure(job_id, error_msg, error_category)
+
         except Exception as exc:
             error_msg = str(exc)
             error_category = self._classify_error(exc)
@@ -642,6 +723,93 @@ class TaskWorker:
                     f"Could not transition job to FAILED: {exc2}",
                     job_id=job_id,
                 )
+
+    # ------------------------------------------------------------------
+    # Approval polling
+    # ------------------------------------------------------------------
+
+    async def _poll_for_approval(
+        self,
+        job_id: str,
+        ticket_id: str,
+    ) -> JobStatus:
+        """
+        Poll for an approval decision on a pending ticket.
+
+        Returns:
+            JobStatus.RUNNING if approved (caller should re-execute).
+            JobStatus.FAILED/CANCELED/DEAD_LETTER if rejected/expired.
+        """
+        approval_repo = getattr(self.run_service, "approval_repo", None)
+        if approval_repo is None:
+            await self._handle_failure(
+                job_id, "No approval repository configured", "tool_blocked"
+            )
+            return JobStatus.FAILED
+
+        poll_interval = 5  # seconds
+        timeout = self.run_service.approval_timeout_sec
+        elapsed = 0
+
+        while not self._stop_event.is_set() and elapsed < timeout:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+
+            ticket = await asyncio.to_thread(approval_repo.get_ticket, ticket_id)
+            if ticket is None:
+                continue
+
+            if ticket.status == TicketStatus.APPROVED:
+                # Transition PENDING_APPROVAL -> RUNNING
+                await asyncio.to_thread(
+                    self.repository.transition_job_status,
+                    job_id, JobStatus.RUNNING,
+                )
+                return JobStatus.RUNNING
+
+            if ticket.status == TicketStatus.REJECTED:
+                error_msg = f"Approval rejected for ticket {ticket_id}: {ticket.reason}"
+                await asyncio.to_thread(
+                    self.repository.transition_job_status,
+                    job_id, JobStatus.FAILED,
+                    error=error_msg,
+                    error_category="tool_blocked",
+                )
+                job = await asyncio.to_thread(self.repository.get_job, job_id)
+                if job:
+                    await self.run_service.handle_job_failure(job, error_msg, "tool_blocked")
+                    job = await asyncio.to_thread(self.repository.get_job, job_id)
+                _json_log("WARNING", f"Approval rejected: {ticket.reason}", job_id=job_id)
+                return job.status if job else JobStatus.FAILED
+
+            if ticket.status == TicketStatus.EXPIRED:
+                error_msg = f"Approval ticket {ticket_id} expired"
+                await asyncio.to_thread(
+                    self.repository.transition_job_status,
+                    job_id, JobStatus.FAILED,
+                    error=error_msg,
+                    error_category="approval_timeout",
+                )
+                job = await asyncio.to_thread(self.repository.get_job, job_id)
+                if job:
+                    await self.run_service.handle_job_failure(job, error_msg, "approval_timeout")
+                    job = await asyncio.to_thread(self.repository.get_job, job_id)
+                _json_log("WARNING", f"Approval ticket expired: {ticket_id}", job_id=job_id)
+                return job.status if job else JobStatus.FAILED
+
+        # Timeout reached without a decision
+        error_msg = f"Approval polling timed out after {timeout}s for ticket {ticket_id}"
+        await asyncio.to_thread(
+            self.repository.transition_job_status,
+            job_id, JobStatus.FAILED,
+            error=error_msg,
+            error_category="approval_timeout",
+        )
+        job = await asyncio.to_thread(self.repository.get_job, job_id)
+        if job:
+            await self.run_service.handle_job_failure(job, error_msg, "approval_timeout")
+            job = await asyncio.to_thread(self.repository.get_job, job_id)
+        return job.status if job else JobStatus.FAILED
 
     @staticmethod
     def _classify_error(exc: BaseException) -> str:
