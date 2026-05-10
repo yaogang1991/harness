@@ -546,37 +546,29 @@ class RunService:
         if not job:
             return None
 
-        # PENDING_APPROVAL jobs are handled by the Worker's poll loop.
-        # If no worker is active (no in-flight task), re-queue so a
-        # new worker pick-up triggers execution with the approved ticket.
+        # PENDING_APPROVAL jobs: always re-queue. The Worker's poll loop may
+        # be in a different process, so we cannot reliably check _running_tasks.
+        # Re-queuing is safe: if a worker IS polling, it will see the approved
+        # ticket and resume. If not, a new worker will pick it up.
         if job.status == JobStatus.PENDING_APPROVAL:
-            running_task = self._running_tasks.get(job.id)
-            if running_task and not running_task.done():
-                # Worker is alive — it will detect approval via poll
-                self._emit_event("approval_resumed_poll", job_id, {
-                    "ticket_id": ticket_id,
-                    "job_id": job_id,
-                    "message": "Worker poll loop will detect approval and resume",
-                })
-                runs = self.repository.list_runs_by_job(job_id)
-                active_runs = [r for r in runs if r.status in {RunStatus.RUNNING, RunStatus.PENDING_APPROVAL}]
-                return active_runs[-1] if active_runs else None
-            else:
-                # No worker alive — transition back to QUEUED so a new worker
-                # picks it up. The approved ticket will be found by
-                # Guardrails.check_and_execute() via find_approved_ticket().
-                self._emit_event("approval_resumed_requeue", job_id, {
-                    "ticket_id": ticket_id,
-                    "job_id": job_id,
-                    "message": "No active worker — re-queuing for new worker pickup",
-                })
-                self.repository.transition_job_status(
-                    job.id, JobStatus.QUEUED,
-                    error="Re-queued after approval (no active worker)",
-                )
-                runs = self.repository.list_runs_by_job(job_id)
-                active_runs = [r for r in runs if r.status in {RunStatus.RUNNING, RunStatus.PENDING_APPROVAL}]
-                return active_runs[-1] if active_runs else None
+            self._emit_event("approval_resumed_requeue", job_id, {
+                "ticket_id": ticket_id,
+                "job_id": job_id,
+                "message": "Re-queuing for worker pickup after approval",
+            })
+            self.repository.transition_job_status(
+                job.id, JobStatus.QUEUED,
+                error="Re-queued after approval",
+            )
+            # Clear stale lease fields so a new worker can acquire the job
+            job = self.repository.get_job(job_id)
+            if job:
+                job.lease_owner = None
+                job.lease_expires_at = None
+                self.repository.update_job(job)
+            runs = self.repository.list_runs_by_job(job_id)
+            active_runs = [r for r in runs if r.status in {RunStatus.RUNNING, RunStatus.PENDING_APPROVAL}]
+            return active_runs[-1] if active_runs else None
 
         # Legacy path for RUNNING/LEASED jobs
         runs = self.repository.list_runs_by_job(job_id)

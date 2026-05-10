@@ -403,7 +403,7 @@ class ApprovalRepository:
 
         Matching is by job_id + tool_name + args_hash.
         run_id is NOT used for matching because re-running a job creates a new run_id.
-        node_id is used as a weak match (only if both sides have it).
+        node_id is a strong match: if either side has it, both must agree.
         """
         args_hash = _compute_args_hash(args)
         for ticket in self.list_tickets(status=TicketStatus.APPROVED, job_id=job_id):
@@ -411,8 +411,11 @@ class ApprovalRepository:
                 continue
             if ticket.args_hash != args_hash:
                 continue
-            if node_id is not None and ticket.node_id is not None and ticket.node_id != node_id:
-                continue
+            # Strong node_id match: if either side specifies a node_id,
+            # both must agree (prevents cross-node approval reuse).
+            if node_id is not None or ticket.node_id is not None:
+                if node_id != ticket.node_id:
+                    continue
             return ticket
         return None
 
