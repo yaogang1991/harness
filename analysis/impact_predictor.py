@@ -43,7 +43,7 @@ class ImpactPredictor:
         """Predict the impact scope of a requirement."""
         # Check memory for similar past predictions
         historical = self._get_historical_prediction(requirement)
-        if historical and historical.confidence >= 0.7:
+        if historical and historical.confidence >= self.confidence_threshold:
             logger.info("Using historical prediction (confidence=%.2f)", historical.confidence)
             return historical
 

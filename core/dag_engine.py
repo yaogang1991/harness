@@ -306,26 +306,38 @@ class DAGExecutionEngine:
                             if node.agent_type == "evaluator":
                                 target_id = self._find_evaluator_target(dag, failed_id)
                                 if target_id and dag.nodes[target_id].agent_type == "generator":
-                                    await self._emit(ExecutionEvent(
-                                        node_id=target_id,
-                                        event_type="upstream_retry",
-                                        details={
-                                            "reason": "evaluator_failed",
-                                            "evaluator": failed_id,
-                                            "feedback": node.eval_feedback[:200],
-                                        },
-                                    ))
-                                    # Retry generator with feedback
-                                    dag.nodes[target_id].status = NodeStatus.RETRYING
-                                    dag.nodes[target_id].error = ""
-                                    dag.nodes[target_id].retry_count += 1
-                                    await self._execute_single_node(dag, target_id)
-
-                                    if dag.nodes[target_id].status == NodeStatus.SUCCESS:
-                                        # Re-run evaluator after generator fix
+                                    # Check retry budget for upstream generator
+                                    gen_node = dag.nodes[target_id]
+                                    if gen_node.retry_count >= gen_node.max_retries:
+                                        # No budget left; retry evaluator directly
                                         node.status = NodeStatus.RETRYING
                                         node.error = ""
                                         await self._execute_single_node(dag, failed_id)
+                                    else:
+                                        await self._emit(ExecutionEvent(
+                                            node_id=target_id,
+                                            event_type="upstream_retry",
+                                            details={
+                                                "reason": "evaluator_failed",
+                                                "evaluator": failed_id,
+                                                "feedback": node.eval_feedback[:200],
+                                            },
+                                        ))
+                                        # Retry generator with feedback
+                                        gen_node.status = NodeStatus.RETRYING
+                                        gen_node.error = ""
+                                        await self._execute_single_node(dag, target_id)
+
+                                        if dag.nodes[target_id].status == NodeStatus.SUCCESS:
+                                            # Re-run evaluator after generator fix
+                                            node.status = NodeStatus.RETRYING
+                                            node.error = ""
+                                            await self._execute_single_node(dag, failed_id)
+                                else:
+                                    # No upstream generator found; retry evaluator directly
+                                    node.status = NodeStatus.RETRYING
+                                    node.error = ""
+                                    await self._execute_single_node(dag, failed_id)
                             else:
                                 # Normal retry: retry the failed node itself
                                 node.status = NodeStatus.RETRYING

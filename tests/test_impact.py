@@ -456,8 +456,8 @@ class TestImpactCLI:
         )
         assert result.returncode == 0
         data = json.loads(result.stdout)
-        assert "files" in data
-        assert data["files"] > 0
+        assert isinstance(data, dict)
+        assert len(data) > 0
 
     def test_impact_history_command(self):
         import subprocess

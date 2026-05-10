@@ -231,7 +231,8 @@ class HarnessConfig(BaseModel):
         default_factory=lambda: int(os.getenv("HARNESS_APPROVAL_TIMEOUT_SEC", "300"))
     )
     cleanup_policy: str = Field(
-        default_factory=lambda: os.getenv("HARNESS_CLEANUP_POLICY", "on_success")
+        default_factory=lambda: os.getenv("HARNESS_CLEANUP_POLICY", "on_success"),
+        pattern=r"^(on_success|always|never)$",
     )
 
     # M3.1: Multi-model routing

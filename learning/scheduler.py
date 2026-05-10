@@ -199,4 +199,5 @@ class LearningScheduler:
                     tmp.unlink()
                 except OSError:
                     pass
-            logger.warning("Failed to save analysis state", exc_info=True)
+            logger.error("Failed to save analysis state", exc_info=True)
+            raise

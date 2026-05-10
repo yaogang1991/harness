@@ -172,7 +172,12 @@ class DependencyGraph:
 
         if node.module:
             mod = ".".join(base_parts + [node.module]) if base_parts else node.module
-            return [mod]
+            results = [mod]
+            # Also resolve imported names as submodules:
+            # from .pkg import mod -> app.pkg + app.pkg.mod
+            for alias in node.names:
+                results.append(f"{mod}.{alias.name}")
+            return results
         else:
             # from . import X — resolve each imported name as a sibling module
             results: list[str] = []

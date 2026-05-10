@@ -773,6 +773,10 @@ class RunService:
             try:
                 from analysis.change_verifier import ChangeVerifier
                 from core.models import MemoryType, MemoryScope
+                # Skip verification if baseline snapshot capture failed
+                if not before_snapshot:
+                    logger.info("Skipping impact verification: no baseline snapshot")
+                    return result_dag
                 # Use coverage_threshold from config (or default 0.7)
                 config = getattr(self, "_harness_config", None)
                 threshold = (
@@ -783,9 +787,7 @@ class RunService:
                     project_path=str(work_dir),
                     coverage_threshold=threshold,
                 )
-                # If no baseline snapshot, capture one now (empty = no prior state)
-                actual_before = before_snapshot if before_snapshot else {}
-                verification = verifier.verify(impact_scope, actual_before)
+                verification = verifier.verify(impact_scope, before_snapshot)
                 if getattr(self, "_memory_manager", None):
                     self._memory_manager.store_learning(
                         agent_type="impact_analyzer",
