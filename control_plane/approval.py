@@ -379,6 +379,48 @@ class ApprovalRepository:
         """Return all pending tickets for a given job."""
         return self.list_tickets(status=TicketStatus.PENDING, job_id=job_id)
 
+    def consume_ticket(self, ticket: ApprovalTicket) -> None:
+        """Mark an approved ticket as consumed so it cannot be reused.
+
+        Keeps the ticket as APPROVED but adds a consumed marker to the reason
+        field. :meth:`find_approved_ticket` skips consumed tickets.
+        """
+        if ticket.status != TicketStatus.APPROVED:
+            return
+        ticket.reason = (ticket.reason or "") + " [consumed]"
+        ticket.updated_at = datetime.now(timezone.utc)
+        self._persist_ticket(ticket)
+
+    def find_approved_ticket(
+        self,
+        job_id: str,
+        tool_name: str,
+        args: dict[str, Any],
+        node_id: str | None = None,
+    ) -> ApprovalTicket | None:
+        """Find a matching approved ticket for the same tool call.
+
+        Matching is by job_id + tool_name + args_hash.
+        run_id is NOT used for matching because re-running a job creates a new run_id.
+        node_id is a strong match: if either side has it, both must agree.
+        """
+        args_hash = _compute_args_hash(args)
+        for ticket in self.list_tickets(status=TicketStatus.APPROVED, job_id=job_id):
+            if ticket.tool_name != tool_name:
+                continue
+            # Skip consumed tickets (single-use approval)
+            if ticket.reason and "[consumed]" in ticket.reason:
+                continue
+            if ticket.args_hash != args_hash:
+                continue
+            # Strong node_id match: if either side specifies a node_id,
+            # both must agree (prevents cross-node approval reuse).
+            if node_id is not None or ticket.node_id is not None:
+                if node_id != ticket.node_id:
+                    continue
+            return ticket
+        return None
+
     def get_stats(self) -> dict[str, int]:
         """Return count of tickets in each status.
 

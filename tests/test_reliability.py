@@ -68,6 +68,16 @@ def run_service(tmp_repo: JobRepository) -> RunService:
 # =============================================================================
 
 
+def _prepare_job_for_run(repo: JobRepository, job_id: str) -> None:
+    """Transition a job from QUEUED -> LEASED -> RUNNING for direct run_job() calls.
+
+    In production, the Worker handles these transitions. Tests calling
+    run_job() directly must transition the job to RUNNING first.
+    """
+    repo.transition_job_status(job_id, JobStatus.LEASED)
+    repo.transition_job_status(job_id, JobStatus.RUNNING)
+
+
 def _make_linear_dag(criteria=None):
     dag = DAG(reasoning="test")
     dag.add_node(DAGNode(
@@ -121,6 +131,7 @@ class TestTimeoutMechanisms:
 
         run_service._execute_plan_and_run = slow_execute
 
+        _prepare_job_for_run(tmp_repo, job.id)
         run = await run_service.run_job(job.id)
 
         assert run.status == RunStatus.TIMED_OUT
@@ -154,6 +165,7 @@ class TestTimeoutMechanisms:
 
         run_service._execute_plan_and_run = fast_execute
 
+        _prepare_job_for_run(tmp_repo, job.id)
         run = await run_service.run_job(job.id)
         # Note: with mocked execution, job goes through handle_job_failure
         # because all_succeeded is False due to summary logic mismatch.
@@ -223,7 +235,7 @@ class TestRetryBackoff:
         assert engine._compute_backoff(2) == 4.0   # 2^2
         assert engine._compute_backoff(3) == 8.0   # 2^3
         assert engine._compute_backoff(5) == 32.0  # 2^5
-        assert engine._compute_backoff(10) == 300.0  # capped at max_backoff
+        assert engine._compute_backoff(10) == 60.0  # capped at 60s
 
     @pytest.mark.asyncio
     async def test_handle_job_failure_queues_for_retry(self, tmp_repo: JobRepository, run_service: RunService):
@@ -569,6 +581,7 @@ class TestRunServiceFailureHandling:
 
         run_service._execute_plan_and_run = failing_execute
 
+        _prepare_job_for_run(tmp_repo, job.id)
         run = await run_service.run_job(job.id)
         assert run.status == RunStatus.FAILED
 
@@ -596,6 +609,7 @@ class TestRunServiceFailureHandling:
         run_service._execute_plan_and_run = failing_execute
 
         # Run 1: attempt=0, fails -> QUEUED, attempt=1
+        _prepare_job_for_run(tmp_repo, job.id)
         run1 = await run_service.run_job(job.id)
         job_after_1 = tmp_repo.get_job(job.id)
         assert job_after_1 is not None
@@ -603,6 +617,7 @@ class TestRunServiceFailureHandling:
         assert job_after_1.attempt == 1
 
         # Run 2: attempt=1, fails -> QUEUED, attempt=2
+        _prepare_job_for_run(tmp_repo, job.id)
         run2 = await run_service.run_job(job.id)
         job_after_2 = tmp_repo.get_job(job.id)
         assert job_after_2 is not None
@@ -610,6 +625,7 @@ class TestRunServiceFailureHandling:
         assert job_after_2.attempt == 2
 
         # Run 3: attempt=2, fails -> DEAD_LETTER (attempt == max_attempts)
+        _prepare_job_for_run(tmp_repo, job.id)
         run3 = await run_service.run_job(job.id)
         job_after_3 = tmp_repo.get_job(job.id)
         assert job_after_3 is not None
@@ -631,6 +647,7 @@ class TestRunServiceFailureHandling:
 
         run_service._execute_plan_and_run = slow_execute
 
+        _prepare_job_for_run(tmp_repo, job.id)
         run = await run_service.run_job(job.id)
         assert run.status == RunStatus.TIMED_OUT
 

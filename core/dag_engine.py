@@ -27,6 +27,7 @@ from core.models import (
     FailureDecision,
     HandoffArtifact,
 )
+from core.exceptions import PendingApprovalError
 
 
 EventHandler = Callable[[ExecutionEvent], Coroutine[Any, Any, None]]
@@ -255,7 +256,12 @@ class DAGExecutionEngine:
                         await self._execute_single_node(dag_ref, node_id)
 
                 tasks = [run_with_limit(nid, semaphore, dag) for nid in level]
-                await asyncio.gather(*tasks, return_exceptions=True)
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Check for PendingApprovalError — must re-raise immediately.
+                for r in results:
+                    if isinstance(r, PendingApprovalError):
+                        raise r
 
                 failed_in_level = [
                     nid for nid in level
@@ -418,6 +424,14 @@ class DAGExecutionEngine:
             if node.health_status == NodeHealth.DEAD:
                 return  # Swallow cancellation for watchdog-killed nodes
             raise  # Re-raise for genuine cancellation requests
+
+        except PendingApprovalError:
+            # Agent hit a high-risk tool requiring human approval.
+            # Do NOT retry, do NOT mark as failed — just pause and re-raise
+            # so the Worker can enter its PENDING_APPROVAL poll loop.
+            node.status = NodeStatus.PENDING_APPROVAL
+            node.completed_at = datetime.now(timezone.utc)
+            raise
 
         except Exception as e:
             # M2.0: Check if node was already killed by watchdog (DEAD state)

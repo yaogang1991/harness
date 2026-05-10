@@ -240,7 +240,7 @@ class RunService:
 
             # --- Core execution (with task-level timeout) ---
             result_dag = await asyncio.wait_for(
-                self._execute_plan_and_run(job, session_id, store, work_dir),
+                self._execute_plan_and_run(job, session_id, store, work_dir, run.id),
                 timeout=timeout,
             )
 
@@ -425,6 +425,15 @@ class RunService:
 
         finally:
             self._running_tasks.pop(job_id, None)
+            # Generate standardized job result artifact
+            try:
+                final_job = self.repository.get_job(job_id)
+                final_run = self.repository.get_run(run.id)
+                if final_job and final_run:
+                    summary = final_run.dag_result or {}
+                    self._generate_job_result(final_job, final_run, summary)
+            except Exception:
+                pass  # Job result generation must not mask original error
 
         return self.repository.get_run(run.id) or run
 
@@ -526,11 +535,31 @@ class RunService:
     # ------------------------------------------------------------------
 
     async def resume_after_approval(self, job_id: str, ticket_id: str) -> Run | None:
-        """Resume a job after an approval decision by re-queuing it for workers."""
+        """Resume a job after an approval decision.
+
+        For PENDING_APPROVAL jobs: the Worker's poll loop detects the approval
+        and resumes execution itself — no action needed here.
+
+        For legacy RUNNING/LEASED jobs: re-queue for workers.
+        """
         job = self.repository.get_job(job_id)
         if not job:
             return None
 
+        # PENDING_APPROVAL jobs: the Worker's poll loop detects approved tickets
+        # and resumes execution. Do NOT re-queue — that races with the poll loop.
+        # If no worker is active, orphan recovery will handle it on next startup.
+        if job.status == JobStatus.PENDING_APPROVAL:
+            self._emit_event("approval_resumed_poll", job_id, {
+                "ticket_id": ticket_id,
+                "job_id": job_id,
+                "message": "Worker poll loop will detect approval and resume",
+            })
+            runs = self.repository.list_runs_by_job(job_id)
+            active_runs = [r for r in runs if r.status in {RunStatus.RUNNING, RunStatus.PENDING_APPROVAL}]
+            return active_runs[-1] if active_runs else None
+
+        # Legacy path for RUNNING/LEASED jobs
         runs = self.repository.list_runs_by_job(job_id)
         active_runs = [r for r in runs if r.status == RunStatus.RUNNING]
         if not active_runs:
@@ -623,6 +652,52 @@ class RunService:
         }
         print(json.dumps(event), flush=True)
 
+    def _generate_job_result(
+        self,
+        job: Job,
+        run: Run,
+        summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Generate a standardized job_result.json artifact."""
+        result = {
+            "job": {
+                "id": job.id,
+                "requirement": job.requirement,
+                "project_path": job.project_path,
+                "attempt": job.attempt,
+            },
+            "run": {
+                "id": run.id,
+                "session_id": run.session_id,
+                "status": run.status.value,
+                "started_at": run.started_at.isoformat() if run.started_at else None,
+                "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+            },
+            "dag": summary,
+            "approvals": [],
+            "artifacts": [],
+            "errors": [],
+            "timestamps": {
+                "created_at": job.created_at.isoformat(),
+                "updated_at": job.updated_at.isoformat(),
+            },
+        }
+
+        if job.last_error:
+            result["errors"].append({
+                "message": job.last_error,
+                "category": job.error_category,
+            })
+
+        # Write to artifact path
+        artifact_dir = Path(self.artifact_path) / job.id
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        result_path = artifact_dir / "job_result.json"
+        with open(result_path, "w") as f:
+            json.dump(result, f, indent=2, default=str, ensure_ascii=False)
+
+        return result
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -633,6 +708,7 @@ class RunService:
         session_id: str,
         store: SessionStore,
         work_dir: Path,
+        run_id: str | None = None,
     ) -> Any:
         """
         Plan a DAG and execute it.
@@ -666,6 +742,9 @@ class RunService:
             ),
             work_dir=work_dir,
             memory_manager=memory_manager,
+            job_id=job.id,
+            approval_repo=self.approval_repo,
+            run_id=run_id,
         )
         result_dag = await engine.execute(dag)
 
@@ -790,6 +869,9 @@ class RunService:
         replan_handler: Any | None = None,
         work_dir: Path | None = None,
         memory_manager: Any | None = None,
+        job_id: str = "",
+        approval_repo: Any | None = None,
+        run_id: str | None = None,
     ) -> DAGExecutionEngine:
         """Build a DAGExecutionEngine with agent pool, failure handler, and optional replan handler."""
         registry = AgentRegistry()
@@ -830,6 +912,9 @@ class RunService:
             max_context_tokens=self.max_context_tokens,
             llm_router=getattr(self, "llm_router", None),
             memory_manager=memory_manager,
+            job_id=job_id,
+            approval_repo=approval_repo,
+            run_id=run_id,
         )
 
         # Orchestrator for failure handling

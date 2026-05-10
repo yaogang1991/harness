@@ -267,6 +267,7 @@ class Guardrails:
         job_id: str = "",
         run_id: str | None = None,
         approval_repo: ApprovalRepository | None = None,
+        node_id: str | None = None,
     ) -> ToolResult | GuardrailResult:
         """Unified execution entry-point.
 
@@ -276,9 +277,9 @@ class Guardrails:
               ``pending_approval``.
 
         When ``pending_approval`` and *approval_repo* + *job_id* are provided,
-        an :class:`~control_plane.approval.ApprovalTicket` is created
-        automatically and its ID is attached to the returned
-        ``GuardrailResult.ticket_id``.
+        first checks if an approved ticket already exists for this exact tool
+        call (prevents re-approval loops after job resume). If none found,
+        creates a new :class:`~control_plane.approval.ApprovalTicket`.
         """
         result = self.evaluate(tool_name, arguments)
 
@@ -286,12 +287,27 @@ class Guardrails:
             return self.tool_registry.execute(tool_name, arguments)
 
         if result.decision == "pending_approval" and approval_repo is not None and job_id:
+            # Check if this exact tool call was already approved (resume scenario).
+            approved = approval_repo.find_approved_ticket(
+                job_id=job_id,
+                tool_name=tool_name,
+                args=arguments,
+                node_id=node_id,
+            )
+            if approved:
+                # Consume the approved ticket so it cannot be reused
+                approved.reason = (approved.reason or "") + " [consumed on execution]"
+                approval_repo.consume_ticket(approved)
+                return self.tool_registry.execute(tool_name, arguments)
+
+            # No prior approval — create a new ticket.
             ticket = approval_repo.create_ticket(
                 job_id=job_id,
                 tool_name=tool_name,
                 args=arguments,
                 risk_level=self.RISK_MAP.get(tool_name, RiskLevel.HIGH).name.lower(),
                 run_id=run_id,
+                node_id=node_id,
             )
             result.ticket_id = ticket.id
             result.reason += f" (ticket: {ticket.id})"

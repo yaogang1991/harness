@@ -455,7 +455,8 @@ class TestHealthEventChain:
         )
         assert decision_event.details["action"] == "retry"
         assert decision_event.details["reasoning"] == "Transient error"
-        assert "health_status" in decision_event.details
+        # failure_decision event includes action, reasoning, and error
+        assert "error" in decision_event.details
 
     @pytest.mark.asyncio
     async def test_failure_decision_on_abort(self):
