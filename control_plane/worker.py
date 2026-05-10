@@ -387,7 +387,7 @@ class TaskWorker:
 
             # 将关联的 job 推进失败策略
             job = await asyncio.to_thread(self.repository.get_job, ticket.job_id)
-            if job and job.status in (JobStatus.LEASED, JobStatus.RUNNING):
+            if job and job.status in (JobStatus.LEASED, JobStatus.RUNNING, JobStatus.PENDING_APPROVAL):
                 error_msg = f"Approval ticket {ticket.id} expired (timeout)"
                 if job.status == JobStatus.LEASED:
                     job = await asyncio.to_thread(
@@ -396,6 +396,19 @@ class TaskWorker:
                         JobStatus.QUEUED,
                         error=error_msg,
                         error_category="timeout",
+                    )
+                elif job.status == JobStatus.PENDING_APPROVAL:
+                    job = await asyncio.to_thread(
+                        self.repository.transition_job_status,
+                        job.id,
+                        JobStatus.FAILED,
+                        error=error_msg,
+                        error_category="approval_timeout",
+                    )
+                    job = await self.run_service.handle_job_failure(
+                        job,
+                        error_msg,
+                        "approval_timeout",
                     )
                 else:
                     job = await asyncio.to_thread(
@@ -427,7 +440,7 @@ class TaskWorker:
 
         for ticket in pending_tickets:
             job = await asyncio.to_thread(self.repository.get_job, ticket.job_id)
-            if job and job.status not in (JobStatus.RUNNING, JobStatus.LEASED):
+            if job and job.status not in (JobStatus.RUNNING, JobStatus.LEASED, JobStatus.PENDING_APPROVAL):
                 # Job 已不在执行中，但 ticket 仍 pending —— 异常情况
                 # 将 ticket 标记为 expired，job 推进失败
                 ticket.status = TicketStatus.EXPIRED
