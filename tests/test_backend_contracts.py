@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from backend.base import ExecutionBackend, BackendType
+from backend.base import ExecutionBackend, WorkspaceIsolation
 from backend.local import LocalBackend
 from backend.worktree import WorktreeBackend
 from backend.lifecycle import BackendManager
@@ -57,15 +57,15 @@ class TestBackendContract:
 
     # -- backend_type property --
 
-    def test_has_backend_type(self, backend):
-        """Every backend must expose a backend_type."""
-        assert hasattr(backend, "backend_type")
-        assert isinstance(backend.backend_type, BackendType)
+    def test_has_workspace_type(self, backend):
+        """Every backend must expose a workspace_type."""
+        assert hasattr(backend, "workspace_type")
+        assert isinstance(backend.workspace_type, WorkspaceIsolation)
 
     def test_backend_type_value(self, backend):
-        """backend_type must be a valid BackendType."""
-        assert backend.backend_type in (
-            BackendType.LOCAL, BackendType.WORKTREE, BackendType.DOCKER,
+        """workspace_type must be a valid WorkspaceIsolation."""
+        assert backend.workspace_type in (
+            WorkspaceIsolation.LOCAL, WorkspaceIsolation.WORKTREE,
         )
 
     # -- is_available --
@@ -272,7 +272,7 @@ class TestCleanupPolicyContract:
             base_path=str(tmp_path),
             cleanup_policy="on_success",
         )
-        work_dir = manager.setup("job-1", "run-1", backend_type="local")
+        work_dir = manager.setup("job-1", "run-1", workspace_type="local")
         (work_dir / "output.txt").write_text("result")
 
         result = manager.finalize("job-1", "run-1", success=True)
@@ -284,7 +284,7 @@ class TestCleanupPolicyContract:
             base_path=str(tmp_path),
             cleanup_policy="on_success",
         )
-        work_dir = manager.setup("job-1", "run-1", backend_type="local")
+        work_dir = manager.setup("job-1", "run-1", workspace_type="local")
         (work_dir / "output.txt").write_text("result")
 
         result = manager.finalize("job-1", "run-1", success=False, reason="error")
@@ -296,7 +296,7 @@ class TestCleanupPolicyContract:
             base_path=str(tmp_path),
             cleanup_policy="always",
         )
-        work_dir = manager.setup("job-1", "run-1", backend_type="local")
+        work_dir = manager.setup("job-1", "run-1", workspace_type="local")
 
         result = manager.finalize("job-1", "run-1", success=False, reason="error")
         assert result is None
@@ -307,7 +307,7 @@ class TestCleanupPolicyContract:
             base_path=str(tmp_path),
             cleanup_policy="never",
         )
-        work_dir = manager.setup("job-1", "run-1", backend_type="local")
+        work_dir = manager.setup("job-1", "run-1", workspace_type="local")
         (work_dir / "output.txt").write_text("result")
 
         result = manager.finalize("job-1", "run-1", success=True)
