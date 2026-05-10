@@ -672,7 +672,10 @@ async def api_instantiate_template(name: str, request: TemplateInstantiateReques
     try:
         dag = registry.instantiate(name, request.variables)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        msg = str(e)
+        if "not found" in msg.lower():
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
     return {
         "nodes": [{
             "id": n.id,

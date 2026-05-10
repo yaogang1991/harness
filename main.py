@@ -89,47 +89,45 @@ async def cmd_plan(args):
     store = SessionStore(config.event_store_path)
     registry = load_registry(args.project)
 
-    # M3.1: LLM router for multi-model support
-    llm_router = None
-    if config.model_routing.routing:
-        from core.llm_router import LLMRouter
-        llm_router = LLMRouter(config.model_routing, config.llm)
-
-    # M3.3: Learning optimizer for planning hints
-    learning_optimizer = None
-    if config.memory.enabled:
-        try:
-            from memory.manager import MemoryManager
-            from learning.optimizer import LearningOptimizer
-            mm = MemoryManager(config.memory, session_store=store)
-            learning_optimizer = LearningOptimizer(mm)
-        except Exception:
-            pass
-
-    orchestrator = IntelligentOrchestrator(
-        llm_config=config.llm,
-        session_store=store,
-        agent_registry=registry,
-        llm_router=llm_router,
-        learning_optimizer=learning_optimizer,
-    )
-
-    print(f"Planning: {args.requirement}")
-    print(f"Available agents: {[a.id for a in registry.list_agents()]}")
-
-    # Use template if specified
+    # Use template if specified (no LLM needed)
     if args.template:
         variables = _parse_template_vars(args.var)
         # Incorporate the user's requirement as the 'requirement' variable if not set
         if args.requirement and "requirement" not in variables:
             variables["requirement"] = args.requirement
         print(f"Using template: {args.template} (vars: {variables})")
-        dag = await orchestrator.plan_from_template(
-            template_name=args.template,
-            variables=variables,
-        )
+        from templates.library import TemplateRegistry
+        tpl_registry = TemplateRegistry()
+        dag = tpl_registry.instantiate(args.template, variables)
     else:
-        # Generate DAG via LLM
+        # LLM-based planning requires orchestrator
+        # M3.1: LLM router for multi-model support
+        llm_router = None
+        if config.model_routing.routing:
+            from core.llm_router import LLMRouter
+            llm_router = LLMRouter(config.model_routing, config.llm)
+
+        # M3.3: Learning optimizer for planning hints
+        learning_optimizer = None
+        if config.memory.enabled:
+            try:
+                from memory.manager import MemoryManager
+                from learning.optimizer import LearningOptimizer
+                mm = MemoryManager(config.memory, session_store=store)
+                learning_optimizer = LearningOptimizer(mm)
+            except Exception:
+                pass
+
+        orchestrator = IntelligentOrchestrator(
+            llm_config=config.llm,
+            session_store=store,
+            agent_registry=registry,
+            llm_router=llm_router,
+            learning_optimizer=learning_optimizer,
+        )
+
+        print(f"Planning: {args.requirement}")
+        print(f"Available agents: {[a.id for a in registry.list_agents()]}")
         dag = await orchestrator.plan(
             requirement=args.requirement,
             project_context={"project_path": args.project} if args.project else None,

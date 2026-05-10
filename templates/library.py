@@ -68,10 +68,14 @@ class TemplateRegistry:
                 except Exception as e:
                     logger.warning("Failed to load template %s: %s", name, e)
         # Fallback: scan all templates and match by declared name
-        for tpl in self.list_templates():
-            if tpl.name == name:
-                self._cache[name] = tpl
-                return tpl
+        matches = [t for t in self.list_templates() if t.name == name]
+        if len(matches) > 1:
+            raise ValueError(
+                f"Duplicate template name '{name}' found in {len(matches)} files"
+            )
+        if matches:
+            self._cache[name] = matches[0]
+            return matches[0]
         return None
 
     def instantiate(
