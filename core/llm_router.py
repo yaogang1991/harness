@@ -55,7 +55,10 @@ class LLMRouter:
                     config_data["api_key"] = os.getenv("OPENAI_API_KEY", "")
                     config_data["base_url"] = os.getenv("OPENAI_BASE_URL", "")
                 elif provider == "anthropic":
-                    config_data["api_key"] = os.getenv("ANTHROPIC_API_KEY", "")
+                    config_data["api_key"] = os.getenv(
+                        "ANTHROPIC_API_KEY",
+                        os.getenv("ANTHROPIC_AUTH_TOKEN", ""),
+                    )
                     config_data["base_url"] = os.getenv("ANTHROPIC_BASE_URL", "")
 
             for k, v in overrides.items():
@@ -108,15 +111,18 @@ class LLMRouter:
             Next LLMClient in the fallback chain, or None if exhausted.
         """
         chain = self._routing.fallback_chain
+        # Track seen models to prevent revisiting (handles duplicates in chain)
+        seen: set[str] = {failed_model}
         try:
             idx = chain.index(failed_model)
         except ValueError:
             idx = -1
 
-        # Try models after the failed one in the chain
+        # Try models after the failed one in the chain, skipping duplicates
         for model in chain[idx + 1:]:
-            if model == failed_model:
+            if model in seen:
                 continue
+            seen.add(model)
             provider = self._resolve_provider(model)
             try:
                 return self._get_or_create(provider, model)

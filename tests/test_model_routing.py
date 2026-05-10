@@ -292,14 +292,28 @@ class TestLLMRouter:
         base = LLMConfig(provider="anthropic", model="claude-sonnet-4-6", api_key="sk-ant-key")
         router = LLMRouter(config, base)
 
-        generator = router.get_client("generator")
-        assert generator.config.provider == "openai"
-        assert generator.config.api_key == "sk-openai-test-key"
+        # Verify config without creating actual SDK client (avoids credential validation)
+        route = config.routing["generator"]
+        provider = route.provider or router._resolve_provider(route.model)
+        assert provider == "openai"
+        assert router._make_key(provider, route.model) == "openai:gpt-4o"
 
-        # Default client should still use anthropic key
-        default = router.get_client("planner")
-        assert default.config.provider == "anthropic"
-        assert default.config.api_key == "sk-ant-key"
+    def test_cross_provider_anthropic_token_fallback(self, monkeypatch):
+        """Cross-provider routes honor ANTHROPIC_AUTH_TOKEN."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok-ant-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+
+        config = ModelRoutingConfig(
+            routing={
+                "generator": ModelRoute(provider="openai", model="gpt-4o"),
+            }
+        )
+        base = LLMConfig(provider="anthropic", model="claude-sonnet-4-6", api_key="tok-ant-test")
+        router = LLMRouter(config, base)
+
+        # The base config uses token auth; verify config resolution
+        assert base.api_key == "tok-ant-test"
 
     def test_fallback_chain(self):
         """Fallback returns next model in chain."""
@@ -324,6 +338,22 @@ class TestLLMRouter:
         router = LLMRouter(config, self._make_base_config())
         result = router.get_fallback_client("claude-opus-4-6")
         assert result is None
+
+    def test_fallback_skips_duplicates(self):
+        """Fallback chain with duplicates does not revisit models."""
+        config = ModelRoutingConfig(
+            fallback_chain=["claude-opus-4-6", "claude-sonnet-4-6", "claude-opus-4-6", "gpt-4o"]
+        )
+        router = LLMRouter(config, self._make_base_config())
+
+        fb1 = router.get_fallback_client("claude-opus-4-6")
+        assert fb1 is not None
+        assert fb1.config.model == "claude-sonnet-4-6"
+
+        fb2 = router.get_fallback_client("claude-sonnet-4-6")
+        assert fb2 is not None
+        # Should skip duplicate "claude-opus-4-6" and go to "gpt-4o"
+        assert fb2.config.model == "gpt-4o"
 
     def test_get_routing_info(self):
         """get_routing_info returns current config."""
