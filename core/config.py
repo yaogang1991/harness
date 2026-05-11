@@ -203,7 +203,8 @@ class HarnessConfig(BaseModel):
     # M2.2: Backend configuration
     default_backend: str = Field(
         default_factory=lambda: os.getenv(
-            "HARNESS_DEFAULT_BACKEND", "local"
+            "HARNESS_DEFAULT_BACKEND",
+            os.getenv("HARNESS_WORKSPACE_ISOLATION", "local"),
         )
     )
     backend_base_path: str = Field(

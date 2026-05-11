@@ -724,12 +724,11 @@ class RunService:
     def _ensure_subsystems(self) -> None:
         """One-time init of shared memory/learning/impact subsystems.
 
-        Called lazily on first use. Mutates shared state only once,
-        so concurrent jobs see the same initialized objects.
+        Called lazily on first use. Flag is set AFTER successful init
+        so transient failures can be retried on the next job.
         """
         if self._subsystems_initialized:
             return
-        self._subsystems_initialized = True
         try:
             from core.config import HarnessConfig
             from memory.manager import MemoryManager
@@ -741,6 +740,7 @@ class RunService:
             logger.debug("Memory manager init skipped: %s", exc)
         self._init_learning_system()
         self._init_impact_analyzer()
+        self._subsystems_initialized = True
 
     async def _execute_plan_and_run(
         self,
@@ -878,7 +878,8 @@ class RunService:
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                     _ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-                    _record_path = _record_dir / f"impact_{_ts}_{run.id[:8] if run_id else uuid.uuid4().hex[:8]}.json"
+                    _uid = run_id[:8] if run_id else uuid.uuid4().hex[:8]
+                    _record_path = _record_dir / f"impact_{_ts}_{_uid}.json"
                     _record_path.write_text(
                         json.dumps(_record, indent=2, default=str, ensure_ascii=False),
                         encoding="utf-8",
