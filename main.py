@@ -435,41 +435,77 @@ async def cmd_submit(args):
 
 
 async def cmd_status(args):
-    """Get the status of a job including its runs."""
+    """Get the status of a job including its runs.
+
+    Queries JobRepository first. If not found, falls back to SessionStore
+    so that ``python main.py run`` results (session-only) are also queryable.
+    """
     repository = _make_repository()
 
     try:
         job = repository.get_job(args.job_id)
-        if job is None:
-            _write_error("E_JOB_NOT_FOUND", f"Job not found: {args.job_id}")
+        if job is not None:
+            runs = repository.list_runs_by_job(args.job_id)
+            result = {
+                "job_id": job.id,
+                "status": job.status.value,
+                "requirement": job.requirement,
+                "project_path": job.project_path,
+                "attempt": job.attempt,
+                "last_error": job.last_error,
+                "error_category": job.error_category,
+                "created_at": str(job.created_at),
+                "updated_at": str(job.updated_at),
+                "runs": [
+                    {
+                        "run_id": r.id,
+                        "status": r.status.value,
+                        "session_id": r.session_id,
+                        "started_at": str(r.started_at),
+                        "completed_at": str(r.completed_at) if r.completed_at else None,
+                    }
+                    for r in runs
+                ],
+            }
+            print(json.dumps(result, default=str))
             return
-        runs = repository.list_runs_by_job(args.job_id)
-        result = {
-            "job_id": job.id,
-            "status": job.status.value,
-            "requirement": job.requirement,
-            "project_path": job.project_path,
-            "attempt": job.attempt,
-            "last_error": job.last_error,
-            "error_category": job.error_category,
-            "created_at": str(job.created_at),
-            "updated_at": str(job.updated_at),
-            "runs": [
-                {
-                    "run_id": r.id,
-                    "status": r.status.value,
-                    "session_id": r.session_id,
-                    "started_at": str(r.started_at),
-                    "completed_at": str(r.completed_at) if r.completed_at else None,
-                }
-                for r in runs
-            ],
-        }
+
+        # Fallback: check SessionStore for session-only IDs (from cmd_run)
+        config = HarnessConfig.from_env()
+        store = SessionStore(config.event_store_path)
+        session_path = store._session_file(args.job_id)
+        if session_path.exists():
+            from core.models import EventType
+            events = store.get_events(args.job_id)
+            status = "unknown"
+            stages = []
+            errors = []
+            for ev in events:
+                if ev.type == EventType.SESSION_START:
+                    status = "running"
+                elif ev.type == EventType.SESSION_END:
+                    status = "completed"
+                elif ev.type == EventType.SESSION_ERROR:
+                    status = "error"
+                    errors.append(ev.payload.get("error", ""))
+                elif ev.type == EventType.WORKFLOW_STAGE_START:
+                    stages.append(ev.payload.get("stage_name", ""))
+
+            result = {
+                "session_id": args.job_id,
+                "source": "session_store",
+                "status": status,
+                "stages": stages,
+                "errors": errors,
+                "event_count": len(events),
+            }
+            print(json.dumps(result, default=str))
+            return
+
+        _write_error("E_JOB_NOT_FOUND", f"Job not found: {args.job_id}")
+
     except Exception as exc:
         _write_error("E_STATUS_FAILED", f"Failed to get job status: {exc}")
-        return
-
-    print(json.dumps(result, default=str))
 
 
 async def cmd_list_jobs(args):
