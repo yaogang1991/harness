@@ -135,6 +135,61 @@ class SessionStore:
     def list_sessions(self) -> list[str]:
         return [f.stem for f in self.base_path.glob("*.jsonl")]
 
+    def exists(self, session_id: str) -> bool:
+        """Check whether a session exists."""
+        return self._session_file(session_id).exists()
+
+    def get_summary(self, session_id: str) -> dict:
+        """Return a summary dict for a session.
+
+        Returns status, stages completed, error count, node results,
+        and event count. Returns empty dict if session not found.
+        """
+        events = self.get_events(session_id)
+        if not events:
+            return {}
+
+        status = "created"
+        stages: list[str] = []
+        errors: list[str] = []
+        node_results: dict[str, str] = {}
+
+        for ev in events:
+            if ev.type == EventType.SESSION_START:
+                status = "running"
+            elif ev.type == EventType.SESSION_END:
+                status = "completed"
+            elif ev.type == EventType.SESSION_ERROR:
+                status = "error"
+                errors.append(ev.payload.get("error", "Unknown"))
+            elif ev.type == EventType.WORKFLOW_STAGE_START:
+                stages.append(ev.payload.get("stage_name", ""))
+
+            # Extract node-level results from execution events
+            p = ev.payload
+            if "node_id" in p and "event_type" not in ev.type:
+                pass  # skip
+            nid = p.get("node_id", "")
+            etype = ev.type if hasattr(ev, "type") else ""
+            if nid and isinstance(etype, str):
+                if "completed" in etype or "succeeded" in etype:
+                    node_results[nid] = "success"
+                elif "failed" in etype:
+                    node_results[nid] = "failed"
+                    err = p.get("error") or p.get("details", {}).get("error", "")
+                    if err:
+                        errors.append(f"{nid}: {err}")
+
+        return {
+            "session_id": session_id,
+            "status": status,
+            "stages": stages,
+            "node_results": node_results,
+            "error_count": len(errors),
+            "errors": errors[:10],
+            "event_count": len(events),
+        }
+
     def checkpoint(self, session_id: str, label: str) -> None:
         """Create a named checkpoint by copying current event log."""
         src = self._session_file(session_id)
