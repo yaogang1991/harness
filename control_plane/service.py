@@ -211,13 +211,15 @@ class RunService:
             from backend.base import WorkspaceIsolation, ExecutionSandbox
             from core.config import HarnessConfig
             harness_config = HarnessConfig.from_env()
+            # Select sandbox: use config value, but fall back to LOCAL if unavailable
+            sandbox_type = ExecutionSandbox(
+                harness_config.sandbox.runtime
+                if harness_config.sandbox.runtime in ("local", "docker")
+                else "local"
+            )
             backend_manager = BackendManager(
                 workspace=WorkspaceIsolation(harness_config.default_backend),
-                sandbox=ExecutionSandbox(
-                    harness_config.sandbox.runtime
-                    if harness_config.sandbox.runtime in ("local", "docker")
-                    else "local"
-                ),
+                sandbox=sandbox_type,
                 repo_root=str(project_root),
                 base_path=self.backend_base_path,
                 workspace_by_risk=harness_config.risk_backend_map,
@@ -736,11 +738,18 @@ class RunService:
         # M3.5: Pre-execution impact prediction
         impact_scope = None
         before_snapshot = None
+        # Use canonical project root for prediction (not ephemeral work_dir)
+        # so historical lookups match across runs with different worktree paths.
+        impact_project_path = (
+            job.project_path
+            if job.project_path
+            else str(work_dir)
+        )
         if getattr(self, "_impact_predictor", None) and work_dir:
             try:
                 impact_scope = await self._impact_predictor.predict(
                     requirement=job.requirement,
-                    project_path=str(work_dir),
+                    project_path=impact_project_path,
                 )
                 from analysis.change_verifier import ChangeVerifier
                 verifier = ChangeVerifier(

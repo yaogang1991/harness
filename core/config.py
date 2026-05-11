@@ -68,7 +68,7 @@ class LLMConfig(BaseModel):
 
 class SandboxConfig(BaseModel):
     enabled: bool = True
-    runtime: str = "docker"  # docker, bubblewrap, direct
+    runtime: str = "local"  # local, docker (docker not yet implemented)
     image: str = "python:3.11-slim"
     network_mode: str = "none"  # none, bridge
     memory_limit: str = "512m"
@@ -304,5 +304,14 @@ class HarnessConfig(BaseModel):
                 enabled=os.getenv("HARNESS_IMPACT_ENABLED", "true").lower()
                 not in ("false", "0", "no"),
                 base_path=os.getenv("HARNESS_IMPACT_PATH", "./data/impact"),
+                coverage_threshold=float(
+                    os.getenv("HARNESS_IMPACT_COVERAGE_THRESHOLD", "0.7")
+                ),
+                max_predicted_files=int(
+                    os.getenv("HARNESS_IMPACT_MAX_FILES", "50")
+                ),
+                confidence_threshold=float(
+                    os.getenv("HARNESS_IMPACT_CONFIDENCE", "0.5")
+                ),
             ),
         )

@@ -82,11 +82,11 @@ class ImpactPredictor:
         # Deduplicate
         predicted_files = sorted(set(expanded))[:self.max_predicted_files]
 
-        # Extract module names
+        # Extract module names (normalize separators for cross-platform)
         predicted_modules = sorted({
-            str(Path(f).parent).replace("/", ".")
+            str(Path(f).parent).replace("/", ".").replace("\\", ".")
             for f in predicted_files
-            if "/" in f
+            if "/" in f or "\\" in f
         })
 
         # Compute risk and confidence
