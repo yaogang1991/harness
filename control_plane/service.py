@@ -38,7 +38,7 @@ from agent.agent_pool import AgentPool
 from session.store import SessionStore
 from tools.registry import ToolRegistry
 from guardrails.policy import Guardrails, GuardrailPolicy, PermissionMode, PersonalGuardrails
-from core.models import PersonalGuardrailPolicy
+from core.models import EventType, PersonalGuardrailPolicy
 from core.exceptions import PendingApprovalError
 from evaluator.engine import EvaluatorEngine
 
@@ -779,6 +779,24 @@ class RunService:
             project_context=project_context,
         )
 
+        # Emit DAG structure to session store (same as main.py:197)
+        store.emit_event(
+            session_id,
+            EventType.SESSION_DAG,
+            {
+                "nodes": {
+                    nid: {
+                        "task": n.task_description,
+                        "agent_type": n.agent_type,
+                        "dependencies": list(n.dependencies),
+                    }
+                    for nid, n in dag.nodes.items()
+                },
+                "edges": [{"from": e.from_node, "to": e.to_node} for e in dag.edges],
+                "requirement": job.requirement,
+            },
+        )
+
         engine = self._create_execution_engine(
             session_id, store,
             replan_handler=lambda dag_ref, failed_id: orchestrator.replan(
@@ -929,7 +947,7 @@ class RunService:
         # Evaluator for quality gates
         evaluator = EvaluatorEngine(session_store=store)
 
-        return DAGExecutionEngine(
+        engine = DAGExecutionEngine(
             agent_executor=pool.get_executor(session_id),
             failure_handler=orchestrator.adapt_to_failure,
             replan_handler=replan_handler,
@@ -940,3 +958,22 @@ class RunService:
             memory_manager=memory_manager,
             session_id=session_id,
         )
+
+        # Register event handler: forward DAG node events to session store
+        async def _session_event_handler(event):
+            event_type_map = {
+                "started": EventType.WORKFLOW_STAGE_START,
+                "completed": EventType.WORKFLOW_STAGE_END,
+                "failed": EventType.WORKFLOW_STAGE_ERROR,
+                "retrying": EventType.WORKFLOW_STAGE_START,
+                "failure_decision": EventType.WORKFLOW_STAGE_ERROR,
+            }
+            mapped_type = event_type_map.get(event.event_type)
+            if mapped_type:
+                store.emit_event(
+                    session_id, mapped_type,
+                    {"node_id": event.node_id, **event.details},
+                )
+
+        engine.on_event(_session_event_handler)
+        return engine
