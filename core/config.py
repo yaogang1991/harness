@@ -18,7 +18,7 @@ def _load_claude_settings() -> dict[str, str]:
     settings_path = Path.home() / ".claude" / "settings-kimi.json"
     if settings_path.exists():
         try:
-            with open(settings_path, "r") as f:
+            with open(settings_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             return data.get("env", {})
         except Exception:
@@ -128,7 +128,7 @@ class ModelRoutingConfig(BaseModel):
     @classmethod
     def from_yaml(cls, path: str | Path) -> ModelRoutingConfig:
         """Load routing config from a YAML file."""
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         routing = {}
         for key, val in data.get("routing", {}).items():
@@ -250,7 +250,7 @@ class HarnessConfig(BaseModel):
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> HarnessConfig:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
         return cls(**data)
 

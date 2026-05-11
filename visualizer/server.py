@@ -68,7 +68,7 @@ async def dashboard():
     """Serve the main monitoring dashboard."""
     index_file = static_path / "index.html"
     if index_file.exists():
-        return HTMLResponse(content=index_file.read_text(), status_code=200)
+        return HTMLResponse(content=index_file.read_text(encoding="utf-8"), status_code=200)
     return HTMLResponse(content="<h1>Harness Visualizer</h1><p>Dashboard not built yet.</p>")
 
 
@@ -219,7 +219,7 @@ def _list_plans() -> list[dict]:
     plans = []
     for plan_file in sorted(plans_dir.glob("plan_*.json"), reverse=True):
         try:
-            data = json.loads(plan_file.read_text())
+            data = json.loads(plan_file.read_text(encoding="utf-8"))
             plans.append({
                 "file": str(plan_file),
                 "reasoning": data.get("reasoning", "")[:100],
@@ -239,7 +239,7 @@ async def console_page():
     """Serve the Web Console (Jobs/Runs/Tickets/Alerts)."""
     console_file = static_path / "console.html"
     if console_file.exists():
-        return HTMLResponse(content=console_file.read_text(), status_code=200)
+        return HTMLResponse(content=console_file.read_text(encoding="utf-8"), status_code=200)
     return HTMLResponse(content="<h1>Harness Console</h1><p>Console not built yet.</p>")
 
 

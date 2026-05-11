@@ -330,7 +330,7 @@ class MetricsReporter:
         """生成 JSON 格式报告。"""
         report = json.dumps(metrics, indent=2, default=str)
         if output_path:
-            Path(output_path).write_text(report)
+            Path(output_path).write_text(report, encoding="utf-8")
         return report
 
     def generate_markdown_report(
@@ -419,5 +419,5 @@ class MetricsReporter:
 
         report = "\n".join(lines)
         if output_path:
-            Path(output_path).write_text(report)
+            Path(output_path).write_text(report, encoding="utf-8")
         return report

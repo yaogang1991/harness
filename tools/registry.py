@@ -251,7 +251,7 @@ class ToolRegistry:
                     error=f"File too large ({path.stat().st_size} bytes, max {_MAX_FILE_SIZE})",
                 )
 
-            with open(path, "r") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
 
             total_lines = len(lines)
@@ -271,7 +271,7 @@ class ToolRegistry:
         try:
             path = self._resolve_path(file_path)
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
             return ToolResult(tool_call_id="", success=True, output=f"Written {len(content)} chars to {file_path}")
         except Exception as e:
@@ -283,14 +283,14 @@ class ToolRegistry:
             if not path.exists():
                 return ToolResult(tool_call_id="", success=False, error=f"File not found: {file_path}")
 
-            content = path.read_text()
+            content = path.read_text(encoding="utf-8", errors="replace")
             idx = content.find(old_string)
             if idx == -1:
                 return ToolResult(tool_call_id="", success=False, error="old_string not found in file")
 
             line_num = content[:idx].count("\n") + 1
             content = content[:idx] + new_string + content[idx + len(old_string):]
-            path.write_text(content)
+            path.write_text(content, encoding="utf-8")
             return ToolResult(
                 tool_call_id="",
                 success=True,
@@ -315,6 +315,8 @@ class ToolRegistry:
                 shell=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
                 cwd=str(run_cwd),
             )
@@ -385,7 +387,7 @@ class ToolRegistry:
                     continue
 
                 try:
-                    content = file_path.read_text(errors="strict")
+                    content = file_path.read_text(encoding="utf-8", errors="replace")
                     if pattern in content:
                         lines = [
                             f"{file_path}:{i+1}:{line}"
@@ -421,6 +423,8 @@ class ToolRegistry:
                 full_cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
                 cwd=str(self.base_cwd) if self.base_cwd else None,
             )

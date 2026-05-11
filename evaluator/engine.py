@@ -132,6 +132,8 @@ class EvaluatorEngine:
                 ["python", "-m", "pytest", str(path), "-v", "--tb=short"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=120,
             )
             passed = result.returncode == 0
@@ -147,6 +149,8 @@ class EvaluatorEngine:
                 ["python", "-m", "pytest", str(path), "--cov=.", "--cov-report=term-missing"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=120,
             )
             for line in result.stdout.split("\n"):
@@ -170,6 +174,8 @@ class EvaluatorEngine:
                 ["python", "-m", "flake8", str(path), "--max-line-length=100"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
             )
             passed = result.returncode == 0
@@ -180,6 +186,8 @@ class EvaluatorEngine:
                     ["ruff", "check", str(path)],
                     capture_output=True,
                     text=True,
+                encoding="utf-8",
+                errors="replace",
                     timeout=60,
                 )
                 passed = result.returncode == 0

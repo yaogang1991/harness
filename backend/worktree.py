@@ -59,6 +59,8 @@ class WorktreeBackend(ExecutionBackend):
             cwd=str(self.repo_root) if self.repo_root else None,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
 
         if result.returncode != 0:
@@ -98,7 +100,8 @@ class WorktreeBackend(ExecutionBackend):
             marker = worktree_path / ".PRESERVED"
             marker.write_text(
                 f"Preserved at: {datetime.now(timezone.utc).isoformat()}\n"
-                f"Reason: {reason}\n"
+                f"Reason: {reason}\n",
+                encoding="utf-8",
             )
             return worktree_path
 
@@ -113,6 +116,8 @@ class WorktreeBackend(ExecutionBackend):
                 cwd=str(self.repo_root) if self.repo_root else None,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
             return result.returncode == 0
@@ -143,6 +148,8 @@ class WorktreeBackend(ExecutionBackend):
             cwd=str(self.repo_root),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         worktrees: list[dict] = []
         current: dict = {}

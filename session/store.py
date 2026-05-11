@@ -51,7 +51,7 @@ class SessionStore:
             metadata=metadata or {},
         )
         file_path = self._session_file(session_id)
-        with open(file_path, "a") as f:
+        with open(file_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(event.model_dump(mode="json"), default=str) + "\n")
         return event
 
@@ -67,7 +67,7 @@ class SessionStore:
             return []
 
         events = []
-        with open(file_path, "r") as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             for idx, line in enumerate(f):
                 if start is not None and idx < start:
                     continue
