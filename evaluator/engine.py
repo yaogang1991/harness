@@ -249,12 +249,13 @@ class EvaluatorEngine:
         passed = len(missing) == 0
         return passed, f"Missing: {missing}" if missing else "All required files present"
 
-    def _check_coverage(self, path: Path, target: int) -> tuple[bool, str]:
+    def _check_coverage(self, work_dir: Path, target: int) -> tuple[bool, str]:
         try:
             result = subprocess.run(
-                ["python", "-m", "pytest", str(path), "--cov=.", "--cov-report=term-missing"],
+                ["python", "-m", "pytest", "-v", "--tb=short", "--cov=.", "--cov-report=term-missing"],
                 capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=120,
+                cwd=str(work_dir) if work_dir.is_dir() else None,
             )
             for line in result.stdout.split("\n"):
                 if "TOTAL" in line:
