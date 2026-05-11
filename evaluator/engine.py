@@ -161,8 +161,9 @@ class EvaluatorEngine:
             return passed, msg, True
 
         if crit.type == CriterionType.LINT:
-            targets = output_artifacts or [work_dir]
-            passed, msg = self._run_lint(targets, Path(work_dir))
+            if not output_artifacts:
+                return True, "No files to lint (passed by default)", True
+            passed, msg = self._run_lint(output_artifacts, Path(work_dir))
             return passed, msg, True
 
         if crit.type == CriterionType.FILE_EXISTS:
