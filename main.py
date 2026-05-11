@@ -190,10 +190,11 @@ async def cmd_execute(args, dag: DAG | None = None):
         _serialize_dag(dag),
     )
 
-    # Create guardrails (default: accept_edits)
+    # Create guardrails (default: dont_ask with all built-in tools whitelisted)
     policy = GuardrailPolicy(
-        mode=PermissionMode.ACCEPT_EDITS,
+        mode=PermissionMode.DONT_ASK,
         auto_approve_read=True,
+        allowed_tools=["read", "write", "edit", "bash", "glob", "grep", "git"],
         max_iterations=args.max_iterations,
     )
     guardrails = Guardrails(policy, tool_registry)
