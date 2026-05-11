@@ -119,7 +119,7 @@ class DependencyGraph:
             parts = path.relative_to(self.project_path).parts
             if any(part in _SKIP_DIRS for part in parts):
                 continue
-            results.append(str(path.relative_to(self.project_path)))
+            results.append(path.relative_to(self.project_path).as_posix())
         return sorted(results)
 
     def _path_to_module(self, rel_path: str) -> str:
@@ -202,11 +202,11 @@ class DependencyGraph:
             return self._module_map[module_name]
         # Try prefix match (e.g., "core.models" -> "core/models.py")
         parts = module_name.split(".")
-        candidate = str(Path(*parts)) + ".py"
+        candidate = Path(*parts).as_posix() + ".py"
         if candidate in self._graph:
             return candidate
         # Try as package
-        candidate_init = str(Path(*parts) / "__init__.py")
+        candidate_init = (Path(*parts) / "__init__.py").as_posix()
         if candidate_init in self._graph:
             return candidate_init
         return None
