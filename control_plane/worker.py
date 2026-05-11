@@ -591,26 +591,40 @@ class TaskWorker:
         return found_job
 
     async def _execute_job_with_semaphore(self, job_id: str) -> None:
-        """Wrap :meth:`_execute_job` inside the concurrency semaphore."""
-        async with self._semaphore:
-            await self._execute_job(job_id)
+        """Wrap :meth:`_execute_job_core` inside the concurrency semaphore.
+
+        Failure handling runs OUTSIDE the semaphore so that cleanup
+        (repository state transitions, re-queuing) does not block the
+        next job from acquiring the semaphore.
+        """
+        try:
+            async with self._semaphore:
+                await self._execute_job_core(job_id)
+        except Exception as exc:
+            error_msg = str(exc)
+            error_category = self._classify_error(exc)
+            _json_log(
+                "ERROR",
+                f"Job execution failed: {error_msg}",
+                job_id=job_id,
+                status="failed",
+                extra={"error_category": error_category},
+            )
+            await self._handle_failure(job_id, error_msg, error_category)
 
     # ------------------------------------------------------------------
     # Single job execution
     # ------------------------------------------------------------------
 
-    async def _execute_job(self, job_id: str) -> None:
+    async def _execute_job_core(self, job_id: str) -> None:
         """
-        Execute a single job from ``LEASED`` through ``RUNNING`` to a
-        terminal state.
+        Core job execution — runs inside the concurrency semaphore.
 
         Steps:
             1. Transition ``LEASED`` → ``RUNNING``
             2. Call ``RunService.run_job``
             3. On success → ``SUCCEEDED``
-            4. On failure → ``RunService.handle_job_failure`` → ``FAILED`` or
-               back to ``QUEUED`` for retry.
-            5. Release lease / clean up on any exception.
+            4. On failure → raise to outer handler
         """
         _json_log("INFO", "Starting job execution", job_id=job_id, status="running")
 
@@ -651,9 +665,8 @@ class TaskWorker:
                     status=JobStatus.SUCCEEDED.value,
                 )
             else:
-                # Run finished but not succeeded — treat as failure.
-                error_msg = f"Run ended with status {run.status.value}"
-                await self._handle_failure(job_id, error_msg, "unknown")
+                # Run finished but not succeeded — raise to outer handler.
+                raise RuntimeError(f"Run ended with status {run.status.value}")
 
         except asyncio.CancelledError:
             # Worker is shutting down — try to return the job to the queue.
@@ -715,10 +728,8 @@ class TaskWorker:
                                 job_id=job_id, status=JobStatus.SUCCEEDED.value,
                             )
                         else:
-                            await self._handle_failure(
-                                job_id,
-                                f"Run ended with status {run.status.value}",
-                                "unknown",
+                            raise RuntimeError(
+                                f"Run ended with status {run.status.value}"
                             )
                         break
                     except PendingApprovalError as pa_exc:
@@ -746,24 +757,7 @@ class TaskWorker:
                             job_id, "failed", "Superseded by next approval cycle",
                         )
                     except Exception as exc2:
-                        error_msg = str(exc2)
-                        error_category = self._classify_error(exc2)
-                        _json_log("ERROR", f"Post-approval execution failed: {error_msg}",
-                                  job_id=job_id, extra={"error_category": error_category})
-                        await self._handle_failure(job_id, error_msg, error_category)
-                        break
-
-        except Exception as exc:
-            error_msg = str(exc)
-            error_category = self._classify_error(exc)
-            _json_log(
-                "ERROR",
-                f"Job execution failed: {error_msg}",
-                job_id=job_id,
-                status="failed",
-                extra={"error_category": error_category},
-            )
-            await self._handle_failure(job_id, error_msg, error_category)
+                        raise  # Let outer _execute_job_with_semaphore handle it
 
     async def _handle_failure(
         self, job_id: str, error: str, error_category: str
