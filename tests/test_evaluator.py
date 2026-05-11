@@ -107,3 +107,9 @@ class TestEvaluateStage:
         crit = json.dumps({"type": "file_exists", "path": "nope.py", "description": "file"})
         result = evaluator.evaluate_stage("s1", "impl", [crit], str(tmp_path))
         assert not result.passed
+
+    def test_success_criterion_object(self, evaluator, tmp_path):
+        (tmp_path / "hello.py").write_text("ok", encoding="utf-8")
+        sc = SuccessCriterion(type=CriterionType.FILE_EXISTS, path="hello.py", description="file")
+        result = evaluator.evaluate_stage("s1", "impl", [sc], str(tmp_path))
+        assert result.passed

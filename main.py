@@ -62,6 +62,7 @@ def load_registry(project_path: str | None = None) -> AgentRegistry:
 
 def _serialize_dag(dag: DAG) -> dict:
     """Serialize a DAG to a JSON-compatible dict."""
+    from core.models import SuccessCriterion
     return {
         "reasoning": dag.reasoning,
         "nodes": [
@@ -69,7 +70,10 @@ def _serialize_dag(dag: DAG) -> dict:
                 "id": n.id,
                 "agent_type": n.agent_type,
                 "task": n.task_description,
-                "success_criteria": n.success_criteria,
+                "success_criteria": [
+                    sc.model_dump(mode="json") if isinstance(sc, SuccessCriterion) else sc
+                    for sc in n.success_criteria
+                ],
             }
             for n in dag.nodes.values()
         ],

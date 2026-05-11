@@ -46,15 +46,15 @@ class TestDAGNodeCriteriaNormalization:
         assert len(node.success_criteria) == 2
         assert node.success_criteria[0] == "tests pass"
 
-    def test_dict_criteria_parsed_to_json(self):
+    def test_dict_criteria_become_success_criterion(self):
         node = DAGNode(id="n2", agent_type="generator", task_description="t",
                        success_criteria=[
                            {"type": "file_exists", "path": "src/foo.py", "description": "foo exists"},
                        ])
         assert len(node.success_criteria) == 1
-        data = json.loads(node.success_criteria[0])
-        assert data["type"] == "file_exists"
-        assert data["path"] == "src/foo.py"
+        assert isinstance(node.success_criteria[0], SuccessCriterion)
+        assert node.success_criteria[0].type == CriterionType.FILE_EXISTS
+        assert node.success_criteria[0].path == "src/foo.py"
 
     def test_mixed_criteria(self):
         node = DAGNode(id="n3", agent_type="generator", task_description="t",
@@ -63,17 +63,26 @@ class TestDAGNodeCriteriaNormalization:
                            {"type": "lint", "description": "lint clean"},
                        ])
         assert len(node.success_criteria) == 2
-        assert node.success_criteria[0] == "tests pass"
-        data = json.loads(node.success_criteria[1])
-        assert data["type"] == "lint"
+        assert isinstance(node.success_criteria[0], str)
+        assert isinstance(node.success_criteria[1], SuccessCriterion)
+        assert node.success_criteria[1].type == CriterionType.LINT
 
-    def test_success_criterion_object(self):
+    def test_success_criterion_object_preserved(self):
         sc = SuccessCriterion(type=CriterionType.COMMAND, command="echo ok", description="ok")
         node = DAGNode(id="n4", agent_type="generator", task_description="t",
                        success_criteria=[sc])
         assert len(node.success_criteria) == 1
-        data = json.loads(node.success_criteria[0])
-        assert data["type"] == "command"
+        assert isinstance(node.success_criteria[0], SuccessCriterion)
+        assert node.success_criteria[0].command == "echo ok"
+
+    def test_json_string_backward_compat(self):
+        """Previously serialized JSON strings should be parsed back into SuccessCriterion."""
+        json_str = json.dumps({"type": "command", "command": "pytest", "description": "test"})
+        node = DAGNode(id="n5", agent_type="generator", task_description="t",
+                       success_criteria=[json_str])
+        assert len(node.success_criteria) == 1
+        assert isinstance(node.success_criteria[0], SuccessCriterion)
+        assert node.success_criteria[0].type == CriterionType.COMMAND
 
 
 # -- EvaluatorEngine normalize + dispatch --
@@ -209,7 +218,7 @@ class TestCommandNoAutoAppend:
 
 class TestEndToEndPipeline:
     def test_structured_criteria_through_dag_node(self, evaluator, work_dir):
-        """Verify structured criteria survive DAGNode serialization -> evaluator."""
+        """Verify structured criteria survive DAGNode -> evaluator."""
         node = DAGNode(
             id="gen1",
             agent_type="generator",
@@ -218,7 +227,8 @@ class TestEndToEndPipeline:
                 {"type": "file_exists", "path": "hello.py", "description": "hello.py exists"},
             ],
         )
-        # success_criteria are now JSON strings after validator
+        # success_criteria are SuccessCriterion objects after validator
+        assert isinstance(node.success_criteria[0], SuccessCriterion)
         result = evaluator.evaluate_stage(
             "s7", "gen1", node.success_criteria,
             artifact_path=str(work_dir),
@@ -238,12 +248,13 @@ class TestEndToEndPipeline:
                 {"type": "file_exists", "path": "hello.py", "description": "file"},
             ],
         )
+        assert isinstance(node.success_criteria[0], str)
+        assert isinstance(node.success_criteria[1], SuccessCriterion)
         result = evaluator.evaluate_stage(
             "s8", "gen2", node.success_criteria,
             artifact_path=str(work_dir),
             work_dir=str(work_dir),
         )
-        # Both should be normalized and evaluated
         assert isinstance(result.passed, bool)
         assert result.score > 0
 
@@ -257,12 +268,10 @@ class TestTemplateStructuredCriteria:
         registry = TemplateRegistry()
         tpl = registry.get_template("build_api")
         assert tpl is not None
-        # Find evaluator node
         eval_nodes = [n for n in tpl.nodes if n.get("agent_type") == "evaluator"]
         assert len(eval_nodes) == 1
         sc = eval_nodes[0].get("success_criteria", [])
         assert len(sc) >= 1
-        # Should be structured dicts with 'type' key
         for c in sc:
             assert isinstance(c, dict)
             assert "type" in c
@@ -271,11 +280,14 @@ class TestTemplateStructuredCriteria:
         from templates.library import TemplateRegistry
         registry = TemplateRegistry()
         dag = registry.instantiate("build_api", {"feature": "Todo API", "language": "Python"})
-        # Check evaluator node has criteria
         eval_nodes = [n for n in dag.nodes.values() if n.agent_type == "evaluator"]
         assert len(eval_nodes) == 1
         assert len(eval_nodes[0].success_criteria) >= 1
-        # Criteria should be JSON strings of structured objects
+        # Criteria should be SuccessCriterion objects, not JSON strings
         for sc in eval_nodes[0].success_criteria:
-            data = json.loads(sc)
-            assert "type" in data
+            assert isinstance(sc, SuccessCriterion)
+            assert sc.type in (
+                CriterionType.COMMAND, CriterionType.LINT,
+                CriterionType.COVERAGE, CriterionType.FILE_EXISTS,
+                CriterionType.NO_CRITICAL, CriterionType.CUSTOM,
+            )

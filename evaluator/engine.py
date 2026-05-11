@@ -39,7 +39,7 @@ class EvaluatorEngine:
         self,
         session_id: str,
         stage_name: str,
-        criteria: list[str],
+        criteria: list[str | SuccessCriterion],
         artifact_path: str,
         work_dir: str | None = None,
         output_artifacts: list[str] | None = None,
@@ -104,18 +104,20 @@ class EvaluatorEngine:
     # Criteria normalization
     # ------------------------------------------------------------------
 
-    def _normalize_criteria(self, criteria: list[str]) -> list[SuccessCriterion]:
-        """Parse list[str] into list[SuccessCriterion].
+    def _normalize_criteria(self, criteria: list[str | SuccessCriterion]) -> list[SuccessCriterion]:
+        """Parse list[str | SuccessCriterion] into list[SuccessCriterion].
 
+        SuccessCriterion instances are preserved as-is.
         Strings that are valid JSON with a 'type' key are deserialized as
-        structured criteria; plain strings go through legacy keyword matching.
+        structured criteria (backward compatibility with serialized data).
+        Plain strings go through legacy keyword matching.
         """
         result: list[SuccessCriterion] = []
         for c in criteria:
             if isinstance(c, SuccessCriterion):
                 result.append(c)
                 continue
-            # Try structured JSON first
+            # Try structured JSON first (backward compat with previously serialized data)
             if isinstance(c, str) and c.startswith("{"):
                 try:
                     data = json.loads(c)

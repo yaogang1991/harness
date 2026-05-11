@@ -56,6 +56,34 @@ class NodeHealth(str, Enum):
     DEAD = "dead"             # Killed by watchdog, final state
 
 
+class EvaluationResult(BaseModel):
+    """Result of an evaluation pass."""
+    passed: bool
+    score: float = 0.0
+    criteria_results: dict[str, bool] = Field(default_factory=dict)
+    feedback: str = ""
+    suggestions: list[str] = Field(default_factory=list)
+
+
+class CriterionType(str, Enum):
+    """Structured criterion types for evaluator dispatch."""
+    COMMAND = "command"
+    LINT = "lint"
+    FILE_EXISTS = "file_exists"
+    COVERAGE = "coverage"
+    NO_CRITICAL = "no_critical"
+    CUSTOM = "custom"
+
+
+class SuccessCriterion(BaseModel):
+    """Structured success criterion for evaluation."""
+    type: CriterionType = CriterionType.CUSTOM
+    command: str = ""
+    path: str = ""
+    target: float | None = None
+    description: str = ""
+
+
 class DAGNode(BaseModel):
     """
     A single node in the execution DAG = one agent task.
@@ -67,7 +95,7 @@ class DAGNode(BaseModel):
     result: dict[str, Any] = Field(default_factory=dict)
     error: str = ""
     output_artifacts: list[str] = Field(default_factory=list)
-    success_criteria: list[str] = Field(default_factory=list)
+    success_criteria: list[str | SuccessCriterion] = Field(default_factory=list)
     eval_feedback: str = ""  # Evaluator feedback, passed back on retry
     max_retries: int = 3
     retry_count: int = 0
@@ -79,20 +107,29 @@ class DAGNode(BaseModel):
     def _normalize_criteria(cls, v: list) -> list:
         """Accept list[str], list[dict], or list[SuccessCriterion].
 
-        Dicts with a 'type' key are parsed into SuccessCriterion objects,
-        which serialize back to str via __str__ for the list[str] annotation.
-        This keeps JSON round-trip compatibility while allowing structured
-        criteria to flow through the DAG pipeline.
+        Dicts with a 'type' key are parsed into SuccessCriterion objects.
+        Strings and SuccessCriterion instances are preserved as-is.
+        JSON strings that look like structured criteria are also parsed
+        for backward compatibility with previously serialized data.
         """
-        result: list[str] = []
+        result: list[str | SuccessCriterion] = []
         for item in v:
-            if isinstance(item, str):
+            if isinstance(item, SuccessCriterion):
                 result.append(item)
             elif isinstance(item, dict) and "type" in item:
-                sc = SuccessCriterion(**item)
-                result.append(sc.model_dump_json())
-            elif isinstance(item, SuccessCriterion):
-                result.append(item.model_dump_json())
+                result.append(SuccessCriterion(**item))
+            elif isinstance(item, str):
+                # Backward compatibility: parse JSON strings from serialized data
+                if item.startswith("{"):
+                    try:
+                        import json
+                        data = json.loads(item)
+                        if isinstance(data, dict) and "type" in data:
+                            result.append(SuccessCriterion(**data))
+                            continue
+                    except (json.JSONDecodeError, Exception):
+                        pass
+                result.append(item)
             elif isinstance(item, dict):
                 result.append(str(item))
             else:
@@ -435,34 +472,6 @@ class PersonalGuardrailPolicy(GuardrailPolicy):
     auto_approve_high: bool = False
     # 交互式确认超时（秒），超时则拒绝
     confirmation_timeout_sec: int = 300
-
-
-class EvaluationResult(BaseModel):
-    """Result of an evaluation pass."""
-    passed: bool
-    score: float = 0.0
-    criteria_results: dict[str, bool] = Field(default_factory=dict)
-    feedback: str = ""
-    suggestions: list[str] = Field(default_factory=list)
-
-
-class CriterionType(str, Enum):
-    """Structured criterion types for evaluator dispatch."""
-    COMMAND = "command"
-    LINT = "lint"
-    FILE_EXISTS = "file_exists"
-    COVERAGE = "coverage"
-    NO_CRITICAL = "no_critical"
-    CUSTOM = "custom"
-
-
-class SuccessCriterion(BaseModel):
-    """Structured success criterion for evaluation."""
-    type: CriterionType = CriterionType.CUSTOM
-    command: str = ""
-    path: str = ""
-    target: float | None = None
-    description: str = ""
 
 
 # =============================================================================

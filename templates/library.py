@@ -154,19 +154,15 @@ class TemplateRegistry:
                 text_fields.append(node.agent_type)
             # Scan success_criteria and other list fields
             for sc in (node.success_criteria or []):
-                if isinstance(sc, str):
-                    # Structured criteria are stored as JSON strings
-                    if sc.startswith("{"):
-                        try:
-                            import json
-                            data = json.loads(sc)
-                            for v in data.values():
-                                if isinstance(v, str):
-                                    text_fields.append(v)
-                        except (json.JSONDecodeError, Exception):
-                            text_fields.append(sc)
-                    else:
-                        text_fields.append(sc)
+                if isinstance(sc, SuccessCriterion):
+                    if sc.description:
+                        text_fields.append(sc.description)
+                    if sc.command:
+                        text_fields.append(sc.command)
+                    if sc.path:
+                        text_fields.append(sc.path)
+                elif isinstance(sc, str):
+                    text_fields.append(sc)
         text_fields.append(dag.reasoning or "")
 
         for text in text_fields:
