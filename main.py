@@ -305,9 +305,26 @@ async def cmd_execute(args, dag: DAG | None = None):
 
         await bridge.broadcast_session_start(session_id, _serialize_dag(dag)) if bridge else None
 
-    # Default console progress
+    # Default console progress + bridge DAG ExecutionEvents into SessionStore
     async def on_event(event):
         print(f"  [{event.event_type.upper()}] {event.node_id}: {event.details}")
+        # Translate DAG ExecutionEvent → SessionStore WORKFLOW_STAGE events
+        if event.event_type == "started":
+            node = dag.nodes.get(event.node_id)
+            store.emit_event(session_id, EventType.WORKFLOW_STAGE_START, {
+                "node_id": event.node_id,
+                "agent_type": node.agent_type if node else "",
+                "task": node.task_description[:200] if node else "",
+            })
+        elif event.event_type == "completed":
+            store.emit_event(session_id, EventType.WORKFLOW_STAGE_END, {
+                "node_id": event.node_id,
+            })
+        elif event.event_type == "failed":
+            store.emit_event(session_id, EventType.WORKFLOW_STAGE_ERROR, {
+                "node_id": event.node_id,
+                "error": event.details.get("reason", "failed"),
+            })
 
     engine.on_event(on_event)
 
@@ -316,7 +333,13 @@ async def cmd_execute(args, dag: DAG | None = None):
     print()
 
     # Execute
-    result_dag = await engine.execute(dag)
+    try:
+        result_dag = await engine.execute(dag)
+    except Exception as exc:
+        store.emit_event(session_id, EventType.SESSION_ERROR, {
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+        raise
 
     # Summary
     summary = engine.get_execution_summary(result_dag)
@@ -326,6 +349,13 @@ async def cmd_execute(args, dag: DAG | None = None):
     print(f"  Failed: {summary['failed']}")
     print(f"  Skipped: {summary['skipped']}")
     print(f"  Session ID: {session_id}")
+
+    # Emit SESSION_END so status queries can accurately report completion
+    store.emit_event(
+        session_id,
+        EventType.SESSION_END,
+        {"summary": summary},
+    )
 
     # Broadcast completion to visualization clients
     if bridge:
@@ -450,41 +480,54 @@ async def cmd_submit(args):
 
 
 async def cmd_status(args):
-    """Get the status of a job including its runs."""
+    """Get the status of a job including its runs.
+
+    Queries JobRepository first. If not found, falls back to SessionStore
+    so that ``python main.py run`` results (session-only) are also queryable.
+    """
     repository = _make_repository()
 
     try:
+        # 1. Try JobRepository (control-plane jobs)
         job = repository.get_job(args.job_id)
-        if job is None:
-            _write_error("E_JOB_NOT_FOUND", f"Job not found: {args.job_id}")
+        if job is not None:
+            runs = repository.list_runs_by_job(args.job_id)
+            result = {
+                "job_id": job.id,
+                "status": job.status.value,
+                "requirement": job.requirement,
+                "project_path": job.project_path,
+                "attempt": job.attempt,
+                "last_error": job.last_error,
+                "error_category": job.error_category,
+                "created_at": str(job.created_at),
+                "updated_at": str(job.updated_at),
+                "runs": [
+                    {
+                        "run_id": r.id,
+                        "status": r.status.value,
+                        "session_id": r.session_id,
+                        "started_at": str(r.started_at),
+                        "completed_at": str(r.completed_at) if r.completed_at else None,
+                    }
+                    for r in runs
+                ],
+            }
+            print(json.dumps(result, default=str))
             return
-        runs = repository.list_runs_by_job(args.job_id)
-        result = {
-            "job_id": job.id,
-            "status": job.status.value,
-            "requirement": job.requirement,
-            "project_path": job.project_path,
-            "attempt": job.attempt,
-            "last_error": job.last_error,
-            "error_category": job.error_category,
-            "created_at": str(job.created_at),
-            "updated_at": str(job.updated_at),
-            "runs": [
-                {
-                    "run_id": r.id,
-                    "status": r.status.value,
-                    "session_id": r.session_id,
-                    "started_at": str(r.started_at),
-                    "completed_at": str(r.completed_at) if r.completed_at else None,
-                }
-                for r in runs
-            ],
-        }
+
+        # 2. Fallback: SessionStore (session-only IDs from cmd_run)
+        config = HarnessConfig.from_env()
+        store = SessionStore(config.event_store_path)
+        if store.exists(args.job_id):
+            summary = store.get_summary(args.job_id)
+            print(json.dumps(summary, default=str))
+            return
+
+        _write_error("E_JOB_NOT_FOUND", f"Job not found: {args.job_id}")
+
     except Exception as exc:
         _write_error("E_STATUS_FAILED", f"Failed to get job status: {exc}")
-        return
-
-    print(json.dumps(result, default=str))
 
 
 async def cmd_list_jobs(args):
