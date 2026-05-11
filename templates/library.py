@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-from core.models import DAG, DAGEdge, DAGNode, DAGTemplate
+from core.models import DAG, DAGEdge, DAGNode, DAGTemplate, SuccessCriterion
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +155,18 @@ class TemplateRegistry:
             # Scan success_criteria and other list fields
             for sc in (node.success_criteria or []):
                 if isinstance(sc, str):
-                    text_fields.append(sc)
+                    # Structured criteria are stored as JSON strings
+                    if sc.startswith("{"):
+                        try:
+                            import json
+                            data = json.loads(sc)
+                            for v in data.values():
+                                if isinstance(v, str):
+                                    text_fields.append(v)
+                        except (json.JSONDecodeError, Exception):
+                            text_fields.append(sc)
+                    else:
+                        text_fields.append(sc)
         text_fields.append(dag.reasoning or "")
 
         for text in text_fields:

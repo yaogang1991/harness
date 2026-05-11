@@ -263,12 +263,14 @@ async def cmd_execute(args, dag: DAG | None = None):
     evaluator = EvaluatorEngine(session_store=store)
 
     # Create DAG engine + M3 memory integration
+    project_work_dir = str(Path(args.project).resolve()) if args.project else None
     engine = DAGExecutionEngine(
         agent_executor=pool.get_executor(session_id),
         failure_handler=orchestrator.adapt_to_failure,
         max_parallel=args.max_parallel,
         evaluator=evaluator,
         artifact_path=config.artifact_path,
+        work_dir=project_work_dir,
         memory_manager=memory_manager,
         session_id=session_id,
     )

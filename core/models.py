@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class AgentCapability(BaseModel):
@@ -73,6 +73,31 @@ class DAGNode(BaseModel):
     retry_count: int = 0
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+    @field_validator("success_criteria", mode="before")
+    @classmethod
+    def _normalize_criteria(cls, v: list) -> list:
+        """Accept list[str], list[dict], or list[SuccessCriterion].
+
+        Dicts with a 'type' key are parsed into SuccessCriterion objects,
+        which serialize back to str via __str__ for the list[str] annotation.
+        This keeps JSON round-trip compatibility while allowing structured
+        criteria to flow through the DAG pipeline.
+        """
+        result: list[str] = []
+        for item in v:
+            if isinstance(item, str):
+                result.append(item)
+            elif isinstance(item, dict) and "type" in item:
+                sc = SuccessCriterion(**item)
+                result.append(sc.model_dump_json())
+            elif isinstance(item, SuccessCriterion):
+                result.append(item.model_dump_json())
+            elif isinstance(item, dict):
+                result.append(str(item))
+            else:
+                result.append(str(item))
+        return result
 
     # M2.0: Heartbeat fields
     health_status: NodeHealth = NodeHealth.HEALTHY  # Current health
@@ -419,6 +444,25 @@ class EvaluationResult(BaseModel):
     criteria_results: dict[str, bool] = Field(default_factory=dict)
     feedback: str = ""
     suggestions: list[str] = Field(default_factory=list)
+
+
+class CriterionType(str, Enum):
+    """Structured criterion types for evaluator dispatch."""
+    COMMAND = "command"
+    LINT = "lint"
+    FILE_EXISTS = "file_exists"
+    COVERAGE = "coverage"
+    NO_CRITICAL = "no_critical"
+    CUSTOM = "custom"
+
+
+class SuccessCriterion(BaseModel):
+    """Structured success criterion for evaluation."""
+    type: CriterionType = CriterionType.CUSTOM
+    command: str = ""
+    path: str = ""
+    target: float | None = None
+    description: str = ""
 
 
 # =============================================================================

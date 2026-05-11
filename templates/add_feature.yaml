@@ -11,9 +11,16 @@ nodes:
   - id: generator
     agent_type: generator
     task_description: "Implement {feature} following the plan. Modify existing files or create new ones as needed."
+    success_criteria:
+      - type: lint
+        description: "lint clean"
   - id: evaluator
     agent_type: evaluator
     task_description: "Evaluate the implementation of {feature}: run tests, check code quality, verify requirements."
+    success_criteria:
+      - type: command
+        command: "python -m pytest -v --tb=short"
+        description: "tests pass"
 edges:
   - from: planner
     to: generator
