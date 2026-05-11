@@ -421,6 +421,25 @@ class EvaluationResult(BaseModel):
     suggestions: list[str] = Field(default_factory=list)
 
 
+class CriterionType(str, Enum):
+    """Structured criterion types for evaluator dispatch."""
+    COMMAND = "command"
+    LINT = "lint"
+    FILE_EXISTS = "file_exists"
+    COVERAGE = "coverage"
+    NO_CRITICAL = "no_critical"
+    CUSTOM = "custom"
+
+
+class SuccessCriterion(BaseModel):
+    """Structured success criterion for evaluation."""
+    type: CriterionType = CriterionType.CUSTOM
+    command: str = ""
+    path: str = ""
+    target: float | None = None
+    description: str = ""
+
+
 # =============================================================================
 # M3.2: Agent Memory models
 # =============================================================================

@@ -467,6 +467,9 @@ class DAGExecutionEngine:
             result = await self._execute_with_heartbeat(node, input_artifacts)
 
             # -- Evaluation gate --
+            # Assign output_artifacts BEFORE evaluation so evaluator can use them
+            node.output_artifacts = result.get("artifacts", [])
+
             if self.evaluator and node.success_criteria:
                 eval_result = await asyncio.to_thread(
                     self.evaluator.evaluate_stage,
@@ -494,7 +497,6 @@ class DAGExecutionEngine:
             node.status = NodeStatus.SUCCESS
             node.completed_at = datetime.now(timezone.utc)
             node.result = result
-            node.output_artifacts = result.get("artifacts", [])
 
             await self._emit(ExecutionEvent(
                 node_id=node_id,
