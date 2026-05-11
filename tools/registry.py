@@ -315,6 +315,8 @@ class ToolRegistry:
                 shell=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
                 cwd=str(run_cwd),
             )
@@ -421,6 +423,8 @@ class ToolRegistry:
                 full_cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=60,
                 cwd=str(self.base_cwd) if self.base_cwd else None,
             )

@@ -20,6 +20,12 @@ import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Ensure UTF-8 encoding on Windows (default is GBK/cp936)
+if sys.stdout:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr:
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from core.config import HarnessConfig, LLMConfig
