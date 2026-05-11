@@ -20,6 +20,12 @@ import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Ensure UTF-8 encoding on Windows (default is GBK/cp936)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from core.config import HarnessConfig, LLMConfig
@@ -142,7 +148,7 @@ async def cmd_plan(args):
     plan_data = _serialize_dag(dag)
     plan_data["levels"] = dag.topological_levels()
 
-    with open(plan_file, "w") as f:
+    with open(plan_file, "w", encoding="utf-8") as f:
         json.dump(plan_data, f, indent=2, default=str)
 
     # Print plan summary
@@ -168,7 +174,7 @@ async def cmd_execute(args, dag: DAG | None = None):
 
     # Load DAG from file if not provided directly
     if dag is None:
-        with open(args.plan_file, "r") as f:
+        with open(args.plan_file, "r", encoding="utf-8") as f:
             plan_data = json.load(f)
 
         dag = DAG(reasoning=plan_data.get("reasoning", ""))
@@ -933,7 +939,7 @@ async def cmd_impact_history(args):
     records = []
     for f in sorted(glob_mod.glob(os.path.join(impact_path, "**", "*.json"), recursive=True), reverse=True):
         try:
-            with open(f) as fh:
+            with open(f, "r", encoding="utf-8") as fh:
                 records.append(json.load(fh))
         except Exception:
             pass

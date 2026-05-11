@@ -707,7 +707,7 @@ class RunService:
         artifact_dir = Path(self.artifact_path) / job.id
         artifact_dir.mkdir(parents=True, exist_ok=True)
         result_path = artifact_dir / "job_result.json"
-        with open(result_path, "w") as f:
+        with open(result_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2, default=str, ensure_ascii=False)
 
         return result
@@ -811,7 +811,7 @@ class RunService:
             config_path = Path(project_path) / ".harness" / "config.yaml"
             if config_path.exists():
                 import yaml
-                with open(config_path, "r") as f:
+                with open(config_path, "r", encoding="utf-8") as f:
                     cfg = yaml.safe_load(f) or {}
                 hook_cfg = cfg.get("hooks", {})
                 for key in ("after_create", "before_run", "after_run", "before_remove"):
@@ -830,7 +830,7 @@ class RunService:
             config_path = Path(work_dir) / ".harness" / "config.yaml"
             if config_path.exists():
                 import yaml
-                with open(config_path, "r") as f:
+                with open(config_path, "r", encoding="utf-8") as f:
                     cfg = yaml.safe_load(f) or {}
                 gr = cfg.get("guardrails", {})
                 if "permission_mode" in gr:

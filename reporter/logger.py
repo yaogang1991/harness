@@ -61,7 +61,7 @@ class Reporter:
         
         # Write report
         report_file = self.report_path / f"{session_id}.md"
-        report_file.write_text(report)
+        report_file.write_text(report, encoding="utf-8")
         
         return str(report_file)
 

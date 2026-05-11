@@ -156,7 +156,7 @@ class AgentRegistry:
         if not path.exists():
             raise FileNotFoundError(f"Agent config not found: {path}")
 
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
 
         for agent_def in data.get("agents", []):
