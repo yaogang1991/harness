@@ -197,16 +197,48 @@ class EvaluatorEngine:
             return passed, msg, True
 
         if crit.type == CriterionType.FILE_EXISTS:
-            # Prefer output_artifacts (actual files the agent produced)
+            # Collect candidate paths: planner-specified + agent-reported.
+            candidates: list[str] = []
+            if crit.path:
+                candidates.extend(f.strip() for f in crit.path.split(","))
             if output_artifacts:
-                return True, f"Files confirmed via output_artifacts ({len(output_artifacts)} files)", True
-            # Fallback: check criteria paths with loose matching
-            files_str = crit.path
-            files = [f.strip() for f in files_str.split(",")] if files_str else []
-            if not files:
+                candidates.extend(output_artifacts)
+
+            if not candidates:
                 return True, "No specific files listed", True
-            passed, msg = self._check_files_exist_loose(files, Path(work_dir))
-            return passed, msg, True
+
+            # Verify each candidate ON DISK (#158).
+            eval_root = Path(work_dir)
+            verified, missing = [], []
+            for cand in candidates:
+                p = Path(cand)
+                full = p if p.is_absolute() else eval_root / p
+                if full.is_file() and full.stat().st_size > 0:
+                    verified.append(str(full))
+                    continue
+                # Fallback: loose glob match by stem.
+                stem = Path(cand).stem
+                if stem and len(stem) >= 3:
+                    matches = list(eval_root.glob(f"**/*{stem}*.py"))
+                    matches = [
+                        m for m in matches
+                        if m.is_file() and m.stat().st_size > 0
+                    ]
+                    if matches:
+                        verified.append(str(matches[0]))
+                        continue
+                missing.append(cand)
+
+            if missing:
+                return False, (
+                    f"FILE_EXISTS failed: {len(missing)} file(s) not found "
+                    f"on disk: {missing}"
+                ), True
+            return (
+                True,
+                f"All {len(verified)} file(s) verified on disk",
+                True,
+            )
 
         if crit.type == CriterionType.COVERAGE:
             target = int(crit.target) if crit.target else 80

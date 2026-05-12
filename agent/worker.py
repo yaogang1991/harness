@@ -10,6 +10,7 @@ Enhanced with:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Iterator
 
 from core.models import AgentMessage, ToolCall, ToolResult, EventType
@@ -151,8 +152,18 @@ class AgentWorker:
     # -- Artifact tracking --------------------------------------------------
 
     def _track_artifact(self, tool_name: str, arguments: dict) -> None:
-        """Track file paths from successful write/edit tool calls."""
+        """Track file paths from successful write/edit tool calls.
+
+        Verifies the file actually exists on disk before recording,
+        preventing false-positive artifact claims (#158).
+        """
         if tool_name in ("write", "edit") and "file_path" in arguments:
             path = arguments["file_path"]
+            try:
+                p = Path(path)
+                if not p.is_file() or p.stat().st_size == 0:
+                    return  # Missing or empty file — do not claim (#158)
+            except OSError:
+                return
             if path not in self.artifacts:
                 self.artifacts.append(path)
