@@ -32,6 +32,7 @@ from core.llm_client import LLMClient
 from core.llm_router import LLMRouter
 from session.store import SessionStore
 from orchestrator.plan_validator import PlanValidator, PlanValidationError
+from orchestrator.prompts import PromptRegistry, get_prompt_registry
 
 logger = logging.getLogger(__name__)
 from templates.library import TemplateRegistry
@@ -46,215 +47,9 @@ class IntelligentOrchestrator:
     then uses LLM reasoning to decompose tasks and build execution DAGs.
     """
 
-    PLANNING_PROMPT_TEMPLATE = """You are the Orchestrator Agent for a multi-agent software development harness.
-
-Your job: Analyze the user's requirement and produce an execution plan (DAG).
-
-{agent_descriptions}
-
-## Planning Rules
-
-1. **Default pattern for simple tasks**: planner → generator → evaluator (linear)
-2. **Decompose complex tasks**: If the requirement spans multiple domains (e.g., frontend + backend + database), create separate generator nodes for each domain
-3. **Parallelize when possible**: Nodes without data dependencies should execute in parallel
-4. **Always include evaluator**: Every code generation path must end with an evaluator node
-5. **Specific task descriptions**: Each node's task must be concrete and verifiable
-6. **Valid agent types ONLY**: Use ONLY the agent types listed above. Do not invent new ones.
-7. **Scope isolation**: For tasks that create independent libraries or utilities,
-   task descriptions must explicitly state "create a standalone module that does NOT
-   import from or depend on existing project modules". List specific features required.
-8. **Avoid stdlib shadowing**: NEVER name a package/module the same as a Python
-   standard library module (e.g., urllib, json, collections, typing, io, os, sys,
-   pathlib, http, email, html, xml, asyncio, logging, unittest, ctypes, importlib,
-   multiprocessing, sqlite3, xmlrpc, lib2to3, distutils, curses, tkinter). If the
-   user's requirement mentions such a name, use a prefixed alternative (e.g.,
-   "myurl_lib" instead of "urllib", "json_utils" instead of "json"). Shadowing
-   stdlib causes catastrophic import failures in pytest and the entire runtime.
-9. **Cross-node naming consistency**: When creating PARALLEL generator nodes that
-   share a library namespace (e.g., one node creates source files, another creates
-   tests for those sources), you MUST do ONE of the following to prevent naming
-   mismatches:
-   a. **Preferred — serialize**: Add an edge from the source node to the test node
-      so tests are generated AFTER source code exists. The test generator will read
-      the source files and use the exact class/function names.
-   b. **Alternative — explicit naming contract**: If parallel execution is required,
-      include an explicit "NAMING CONTRACT" section in EACH node's task description
-      listing all class names, function names, and module paths that both nodes must
-      use. Example: "NAMING CONTRACT: class TokenBucket (not TokenBucketLimiter),
-      module path ratelib.token_bucket".
-
-## Output Format
-
-Return a JSON object with this exact structure:
-
-{{
-  "reasoning": "Brief explanation of your planning decisions...",
-  "nodes": [
-    {{
-      "id": "plan",
-      "agent_type": "planner",
-      "task": "Analyze requirement and produce implementation plan..."
-    }},
-    {{
-      "id": "impl",
-      "agent_type": "generator",
-      "task": "Implement the planned feature following project conventions...",
-      "success_criteria": [
-        {{"type": "tests_pass", "description": "tests pass"}},
-        {{"type": "lint", "description": "lint clean"}}
-      ]
-    }},
-    {{
-      "id": "eval",
-      "agent_type": "evaluator",
-      "task": "Verify implementation against plan and project standards...",
-      "success_criteria": [
-        {{"type": "tests_pass", "description": "tests pass"}},
-        {{"type": "coverage", "target": 80, "description": "coverage 80%"}}
-      ]
-    }}
-  ],
-  "edges": [
-    {{"from": "plan", "to": "impl"}},
-    {{"from": "impl", "to": "eval"}}
-  ]
-}}
-
-## Success Criteria Types
-
-Each success_criteria entry should be a structured object with a "type" field:
-- **tests_pass**: {{"type": "tests_pass", "description": "tests pass"}} — runs pytest
-- **lint**: {{"type": "lint", "description": "lint clean"}} — runs flake8/ruff
-- **file_exists**: {{"type": "file_exists", "path": "src/foo.py", "description": "file exists"}} — exact path must exist on disk; use ONLY when the exact filename is a hard requirement
-- **file_pattern**: {{"type": "file_pattern", "pattern": "reporter/*.py", "description": "report module exists"}} — glob pattern; at least one non-empty file must match; use when the generator can choose the filename
-- **coverage**: {{"type": "coverage", "target": 80, "description": "coverage 80%"}}
-- **no_critical**: {{"type": "no_critical", "description": "no critical markers"}}
-
-**file_exists vs file_pattern**:
-- Use `file_exists` when the exact file path matters (e.g., entry points, config files, imports by other modules).
-- Use `file_pattern` when any file matching the pattern is acceptable (e.g., "a module under reporter/", "any test file").
-- When using `file_exists`, the task description must tell the generator: "Create this exact file path."
-
-**CRITICAL**: Only assign file-based criteria (file_exists, file_pattern, tests_pass, lint, coverage) to `generator` nodes.
-Planner and evaluator nodes produce in-memory output (plans, feedback), NOT files.
-For planner nodes, either omit success_criteria or use CUSTOM type.
-For evaluator nodes, omit success_criteria entirely.
-
-For simple cases you MAY use plain strings like "tests pass" or "lint clean" — these will be auto-parsed — but structured objects are preferred for reliability.
-
-## Important
-- Node IDs must be unique and descriptive (e.g., "plan", "impl_api", "eval")
-- Every edge references valid node IDs
-- The DAG must be acyclic
-- Keep it minimal: don't add unnecessary nodes
-"""
-
-    ADAPTATION_PROMPT_TEMPLATE = """You are the Orchestrator Agent handling an execution failure.
-
-A Worker Agent has failed during execution. Decide how to proceed.
-
-Failed Node:
-- ID: {node_id}
-- Agent Type: {agent_type}
-- Task: {task}
-- Error: {error}
-- Retry count: {retry_count}
-
-DAG Status:
-{dag_status}
-
-Available Actions:
-- **retry**: Retry the same node (most common for evaluation failures)
-- **skip**: Skip this node and continue (if failure is acceptable)
-- **abort**: Stop execution entirely (if failure is critical)
-- **replan**: Create a new plan (if current plan is fundamentally flawed)
-
-Return JSON:
-{{
-  "action": "retry|skip|abort|replan",
-  "reasoning": "Why you chose this action..."
-}}
-
-CRITICAL RULES:
-1. If the failure reason is "evaluation_failed" and the feedback contains specific,
-   actionable issues (e.g. "tests failed because table not created", "missing import"),
-   you MUST choose "retry". The generator agent will receive the feedback and fix
-   the issues on the next attempt.
-2. Choose "replan" ONLY if the task decomposition or agent assignment is wrong.
-3. Choose "abort" ONLY for critical security issues or data loss risks.
-4. Choose "skip" ONLY for non-critical optional nodes.
-
-Default behavior for evaluation failures: retry.
-"""
-
-    REPLAN_PROMPT_TEMPLATE = """You are the Orchestrator Agent for a multi-agent software development harness.
-
-A previous execution plan has partially failed. You need to create a new plan for the REMAINING work, taking into account what has already been successfully completed.
-
-## Already Executed Nodes
-
-{executed_nodes}
-
-## Failed Node
-
-- ID: {failed_node}
-- Error: {failed_error}
-
-## Available Agents
-
-{agent_descriptions}
-
-## Replanning Rules
-
-1. **Preserve completed work**: Do NOT re-plan nodes that already succeeded. Only plan for failed, skipped, or pending nodes.
-2. **Address the root cause**: The new plan should specifically address why the failed node errored (e.g., different agent type, simpler task decomposition, alternative approach).
-3. **Reuse successful outputs**: Dependent nodes can reference artifacts from already-completed successful nodes.
-4. **Valid agent types ONLY**: Use ONLY the agent types listed above.
-5. **Keep it minimal**: Only include nodes that still need to be executed.
-
-## Output Format
-
-Return a JSON object with this exact structure:
-
-{{
-  "reasoning": "Explanation of why the original plan failed and how the new plan addresses it...",
-  "nodes": [
-    {{
-      "id": "plan_fix",
-      "agent_type": "planner",
-      "task": "Re-analyze the failure and produce a corrected implementation plan..."
-    }},
-    {{
-      "id": "impl_fix",
-      "agent_type": "generator",
-      "task": "Implement the corrected plan...",
-      "success_criteria": [
-        {{"type": "tests_pass", "description": "tests pass"}},
-        {{"type": "lint", "description": "lint clean"}}
-      ]
-    }},
-    {{
-      "id": "eval_fix",
-      "agent_type": "evaluator",
-      "task": "Verify the corrected implementation...",
-      "success_criteria": [
-        {{"type": "tests_pass", "description": "tests pass"}},
-        {{"type": "coverage", "target": 80, "description": "coverage 80%"}}
-      ]
-    }}
-  ],
-  "edges": [
-    {{"from": "plan_fix", "to": "impl_fix"}},
-    {{"from": "impl_fix", "to": "eval_fix"}}
-  ]
-}}
-
-## Important
-- Node IDs must be unique and not conflict with already-executed nodes
-- Every edge references valid node IDs
-- The DAG must be acyclic
-- Include ALL nodes that still need execution (failed node + any pending downstream nodes)
-"""
+    PLANNING_PROMPT_TEMPLATE: str = ""  # Loaded from file via PromptRegistry
+    ADAPTATION_PROMPT_TEMPLATE: str = ""  # Loaded from file via PromptRegistry
+    REPLAN_PROMPT_TEMPLATE: str = ""  # Loaded from file via PromptRegistry
 
     def __init__(
         self,
@@ -263,11 +58,13 @@ Return a JSON object with this exact structure:
         agent_registry: AgentRegistry,
         llm_router: LLMRouter | None = None,
         learning_optimizer: Any | None = None,
+        prompt_registry: PromptRegistry | None = None,
     ):
         self.llm_config = llm_config
         self.session_store = session_store
         self.agent_registry = agent_registry
         self.learning_optimizer = learning_optimizer
+        self._prompt_registry = prompt_registry or get_prompt_registry()
         if llm_router:
             self.llm = llm_router.get_client("orchestrator")
         else:
@@ -287,7 +84,8 @@ Return a JSON object with this exact structure:
         agent_descriptions = self.agent_registry.to_prompt_description()
 
         # Step 2: Build planning prompt
-        system_prompt = self.PLANNING_PROMPT_TEMPLATE.format(
+        planning_template = self._prompt_registry.load("planning")
+        system_prompt = planning_template.format(
             agent_descriptions=agent_descriptions
         )
 
@@ -409,7 +207,7 @@ Return a JSON object with this exact structure:
             )
 
         # Build adaptation prompt
-        system_prompt = self.ADAPTATION_PROMPT_TEMPLATE.format(
+        system_prompt = self._prompt_registry.load("adaptation").format(
             node_id=failed_node_id,
             agent_type=failed_node.agent_type,
             task=failed_node.task_description,
@@ -555,7 +353,7 @@ Return a JSON object with this exact structure:
 
         # 2. Build replan prompt
         failed_error = dag.nodes[failed_node_id].error[:500] if failed_node_id in dag.nodes else ""
-        system_prompt = self.REPLAN_PROMPT_TEMPLATE.format(
+        system_prompt = self._prompt_registry.load("replan").format(
             executed_nodes=json.dumps(executed_summary, indent=2),
             failed_node=failed_node_id,
             failed_error=failed_error,
