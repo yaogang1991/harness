@@ -153,6 +153,91 @@ def _check_dirty_workspace(project: str | None) -> None:
         sys.exit(1)
 
 
+def _check_stdlib_shadowing(project: str | None) -> None:
+    """Check for directories that shadow Python stdlib modules (#240).
+
+    Previous runs may have created directories like 'urllib/' that shadow
+    stdlib, causing catastrophic import failures in subsequent runs.
+    Detects and optionally removes them.
+    """
+    if not project:
+        return
+
+    project_path = Path(project).resolve()
+    if not project_path.is_dir():
+        return
+
+    # Use sys.stdlib_module_names (Python 3.10+) for stdlib check
+    stdlib_names = getattr(sys, "stdlib_module_names", None) or {
+        "abc", "argparse", "array", "ast", "asyncio", "atexit", "base64",
+        "bisect", "builtins", "bz2", "calendar", "cgi", "cmath", "cmd",
+        "codecs", "collections", "colorsys", "concurrent", "configparser",
+        "contextlib", "copy", "csv", "ctypes", "curses", "dataclasses",
+        "datetime", "dbm", "decimal", "difflib", "dis", "doctest", "email",
+        "enum", "errno", "fileinput", "fnmatch", "fractions", "ftplib",
+        "functools", "gc", "getopt", "getpass", "glob", "gzip", "hashlib",
+        "heapq", "hmac", "html", "http", "importlib", "inspect", "io",
+        "itertools", "json", "keyword", "lib2to3", "linecache", "locale",
+        "logging", "lzma", "mailbox", "marshal", "math", "mimetypes", "mmap",
+        "multiprocessing", "numbers", "operator", "os", "pathlib", "pdb",
+        "pickle", "pipes", "pkgutil", "platform", "plistlib", "poplib",
+        "pprint", "profile", "pstats", "queue", "random", "re", "reprlib",
+        "runpy", "sched", "secrets", "select", "shelve", "shlex", "shutil",
+        "signal", "site", "smtplib", "socket", "socketserver", "sqlite3",
+        "ssl", "stat", "statistics", "string", "struct", "subprocess",
+        "symtable", "sys", "sysconfig", "tabnanny", "tarfile", "tempfile",
+        "test", "textwrap", "threading", "time", "timeit", "tkinter",
+        "token", "tokenize", "trace", "traceback", "types", "typing",
+        "unicodedata", "unittest", "urllib", "uu", "uuid", "venv",
+        "warnings", "weakref", "webbrowser", "wsgiref", "xml", "xmlrpc",
+        "zipfile", "zlib", "zoneinfo",
+    }
+
+    shadowing = []
+    for child in sorted(project_path.iterdir()):
+        if not child.is_dir():
+            continue
+        if child.name.startswith((".", "_")):
+            continue
+        if child.name.lower() in stdlib_names:
+            shadowing.append((child, child.name.lower()))
+
+    if not shadowing:
+        return
+
+    msg = (
+        f"WARNING: Found {len(shadowing)} directory(ies) shadowing Python stdlib:\n"
+    )
+    for path, name in shadowing:
+        msg += f"  - {path.name}/ shadows stdlib '{name}'\n"
+    msg += "These will cause import failures in pytest, httpx, and other tools.\n"
+
+    non_interactive = os.environ.get("HARNESS_NON_INTERACTIVE", "").lower() in (
+        "true", "1", "yes",
+    )
+    if non_interactive:
+        # Auto-remove in non-interactive mode to prevent cascade failures
+        for path, _ in shadowing:
+            import shutil
+            shutil.rmtree(path, ignore_errors=True)
+            sys.stderr.write(f"Removed shadowing directory: {path.name}/\n")
+        return
+
+    # Interactive: ask user
+    sys.stderr.write(msg)
+    try:
+        answer = input("Remove these directories? [Y/n] ").strip().lower()
+        if answer in ("", "y", "yes"):
+            import shutil
+            for path, _ in shadowing:
+                shutil.rmtree(path, ignore_errors=True)
+                sys.stderr.write(f"Removed: {path.name}/\n")
+        else:
+            sys.stderr.write("Kept. Proceeding may fail due to import conflicts.\n")
+    except (EOFError, KeyboardInterrupt):
+        sys.stderr.write("\nKept existing directories.\n")
+
+
 def load_registry(project_path: str | None = None) -> AgentRegistry:
     """Load agent registry with defaults + project custom agents."""
     registry = AgentRegistry()
@@ -566,6 +651,9 @@ async def cmd_run(args):
 
     # Warn about dirty workspace to prevent accidental re-runs (#147)
     _check_dirty_workspace(args.project)
+
+    # Check for leftover stdlib-shadowing directories (#240)
+    _check_stdlib_shadowing(args.project)
 
     # Plan
     dag = await cmd_plan(args)
