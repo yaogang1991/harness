@@ -60,16 +60,11 @@ class TestResolveProjectPath:
         assert result == str(HARNESS_ROOT)
 
     def test_no_project_inside_harness_with_flag_passes(self):
-        """No --project, cwd inside harness WITH --allow-self-modify → but still
-        needs project. Flag only applies when project is explicitly harness."""
-        # When cwd is harness and no project, even with flag we still need
-        # a project path. The flag allows targeting harness explicitly,
-        # but we still default to cwd if outside harness.
+        """No --project, cwd inside harness WITH --allow-self-modify → returns cwd."""
         subdir = HARNESS_ROOT / "core"
         with patch("main.Path.cwd", return_value=subdir):
-            with pytest.raises(SystemExit) as exc_info:
-                _resolve_project_path(None, allow_self_modify=True)
-            assert exc_info.value.code == 2
+            result = _resolve_project_path(None, allow_self_modify=True)
+        assert result == str(subdir.resolve())
 
     def test_explicit_external_project_with_flag_passes(self, tmp_path):
         """External --project with --allow-self-modify → passes normally."""
