@@ -10,6 +10,7 @@ Enhanced with:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Iterator
 
 from core.models import AgentMessage, ToolCall, ToolResult, EventType
@@ -32,12 +33,14 @@ class AgentWorker:
         config: LLMConfig,
         session_store: SessionStore,
         max_context_tokens: int = 100_000,
+        base_cwd: str | None = None,
     ):
         self.config = config
         self.session_store = session_store
         self.llm = LLMClient(config)
         self.max_context_tokens = max_context_tokens
         self.artifacts: list[str] = []
+        self._base_cwd = Path(base_cwd).resolve() if base_cwd else None
 
     # -- Public interface ---------------------------------------------------
 
@@ -158,8 +161,20 @@ class AgentWorker:
     # -- Artifact tracking --------------------------------------------------
 
     def _track_artifact(self, tool_name: str, arguments: dict) -> None:
-        """Track file paths from successful write/edit tool calls."""
+        """Track file paths from successful write/edit tool calls.
+
+        Verifies the file actually exists on disk before recording,
+        preventing false-positive artifact claims (#158).
+        """
         if tool_name in ("write", "edit") and "file_path" in arguments:
             path = arguments["file_path"]
+            try:
+                p = Path(path)
+                if not p.is_absolute() and self._base_cwd:
+                    p = self._base_cwd / p
+                if not p.is_file() or p.stat().st_size == 0:
+                    return  # Missing or empty file — do not claim (#158)
+            except OSError:
+                return
             if path not in self.artifacts:
                 self.artifacts.append(path)
