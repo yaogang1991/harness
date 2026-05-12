@@ -595,9 +595,32 @@ class DAGExecutionEngine:
                         )
                         new_in_current = current_issues - prev_issues
                         fixed_from_prev = prev_issues - current_issues
+
+                        # Check if all current issues are lint-only (#154).
+                        # Lint-only failures should not block retry progress.
+                        lint_keywords = ("E501", "E999", "lint", "flake8",
+                                         "line too long", "whitespace")
+                        all_issues_lint_only = (
+                            len(current_issues) > 0
+                            and all(
+                                any(kw in iss for kw in lint_keywords)
+                                for iss in current_issues
+                            )
+                        )
+
                         if new_in_current and not fixed_from_prev:
-                            # Only new issues, nothing fixed → true regression
-                            is_regression = True
+                            # Only new issues, nothing fixed
+                            if all_issues_lint_only:
+                                # Lint-only — allow retry, update best (#154)
+                                is_regression = False
+                                self._best_attempts[node_id] = {
+                                    "score": eval_result.score,
+                                    "artifacts": node.output_artifacts.copy(),
+                                    "feedback": eval_result.feedback,
+                                    "lint_issues": current_issues,
+                                }
+                            else:
+                                is_regression = True
                         elif (
                             len(new_in_current) > len(fixed_from_prev)
                             and eval_result.score < prev_best["score"]
