@@ -226,6 +226,25 @@ class EvaluatorEngine:
         else:
             overall_passed = all_auto_passed
 
+        # Mandatory artifact verification (#234): verify output_artifacts
+        # actually exist on disk. Prevents false positives when a generator
+        # reports creating files that were never actually written.
+        if output_artifacts and eval_dir:
+            eval_root = Path(eval_dir)
+            phantom = []
+            for art in output_artifacts:
+                p = Path(art)
+                full = p if p.is_absolute() else eval_root / p
+                if not (full.is_file() and full.stat().st_size > 0):
+                    phantom.append(art)
+            if phantom:
+                overall_passed = False
+                score = 0.0
+                feedback_parts.append(
+                    f"FAIL artifact_verification: {len(phantom)} reported "
+                    f"artifact(s) not found on disk: {phantom}"
+                )
+
         feedback = "\n".join(feedback_parts)
         if has_uncheckable:
             feedback += (

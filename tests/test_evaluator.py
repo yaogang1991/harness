@@ -220,6 +220,10 @@ class TestEvaluateStage:
         mock_run.return_value = MagicMock(
             returncode=0, stdout="2 passed in 0.01s\n", stderr="",
         )
+        # Create the artifact on disk so phantom check (#234) doesn't fail
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        (src_dir / "module.py").write_text("x = 1\n", encoding="utf-8")
         result = evaluator.evaluate_stage(
             "s1", "impl",
             [SuccessCriterion(
