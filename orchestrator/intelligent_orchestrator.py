@@ -37,6 +37,31 @@ from orchestrator.prompts import PromptRegistry, get_prompt_registry
 logger = logging.getLogger(__name__)
 from templates.library import TemplateRegistry
 
+logger = logging.getLogger(__name__)
+
+# Infrastructure errors cannot be fixed by retrying with the same environment.
+# Detect early and abort instead of wasting retry budget (#187).
+INFRASTRUCTURE_ERROR_PATTERNS: list[str] = [
+    "no linter available",
+    "command not found",
+    "modulenotfounderror",
+    "no such file or directory",
+    "permission denied",
+    "connection refused",
+    "connection timed out",
+    "no module named",
+    "fatal error",
+]
+
+
+def _is_infrastructure_error(error: str) -> bool:
+    """Check whether an error is an infrastructure/environment issue
+    that cannot be resolved by retrying."""
+    if not error:
+        return False
+    lower = error.lower()
+    return any(pattern in lower for pattern in INFRASTRUCTURE_ERROR_PATTERNS)
+
 
 class IntelligentOrchestrator:
     """
@@ -192,11 +217,24 @@ class IntelligentOrchestrator:
     async def adapt_to_failure(self, dag: DAG, failed_node_id: str, error: str = "") -> FailureDecision:
         """
         Handle a failed node by asking the orchestrator LLM to decide.
-        
+
         This is the adaptive part - the orchestrator reasons about the failure
         and decides the best course of action, rather than using hardcoded rules.
         """
         failed_node = dag.nodes[failed_node_id]
+
+        # Infrastructure errors (missing tools, broken env) are never fixable
+        # by retrying — abort immediately instead of wasting retry budget (#187).
+        node_error = failed_node.error or error
+        if _is_infrastructure_error(node_error):
+            logger.warning(
+                "Node %s failed with infrastructure error, aborting: %s",
+                failed_node_id, node_error[:200],
+            )
+            return FailureDecision(
+                action="abort",
+                reasoning=f"Infrastructure error (not retryable): {node_error[:200]}",
+            )
 
         # Build DAG status summary
         dag_status = []
