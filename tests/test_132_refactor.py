@@ -199,7 +199,7 @@ class TestWorkerAgentExecutionContext:
     async def test_context_passed_to_execute_tool(
         self, mock_capability, mock_session_store, mock_tool_registry,
     ):
-        """_execute_tool receives ExecutionContext with correct run_id/node_id."""
+        """_execute_tool passes ExecutionContext through to guardrails.check_and_execute."""
         guardrails = MagicMock()
         guardrails.check_and_execute = MagicMock(
             return_value=ToolResult(tool_call_id="tc1", success=True, output="ok"),
@@ -214,21 +214,36 @@ class TestWorkerAgentExecutionContext:
             job_id="job_123",
         )
 
-        # Patch AgentWorker.run to avoid LLM call
-        with patch.object(
-            agent.worker, "run",
-            return_value=[
-                AgentMessage(role="assistant", content="done"),
-            ],
-        ):
+        call_count = [0]
+
+        def mock_llm_call(messages, tools):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "tc1",
+                            "name": "read",
+                            "arguments": {"file_path": "test.txt"},
+                        }
+                    ],
+                }
+            return {"content": "done"}
+
+        with patch.object(agent.worker.llm, "call", side_effect=mock_llm_call):
             result = await agent.execute(
                 "do something", [], "sess_1",
                 node_id="node_a", run_id="run_1",
             )
 
         assert result["status"] == "completed"
-        # Guardrails should have been called with correct context
-        assert guardrails.check_and_execute.call_count == 0  # no tool calls in mock
+        # Guardrails should have been called with the context propagated from execute()
+        assert guardrails.check_and_execute.call_count == 1
+        call_kwargs = guardrails.check_and_execute.call_args.kwargs
+        assert call_kwargs.get("job_id") == "job_123"
+        assert call_kwargs.get("run_id") == "run_1"
+        assert call_kwargs.get("node_id") == "node_a"
 
     def test_execution_context_dataclass(self):
         """ExecutionContext carries job/run/node/approval_repo."""
@@ -253,6 +268,21 @@ class TestWorkerAgentExecutionContext:
         w1 = pool.create_worker("planner")
         w2 = pool.create_worker("planner")
         assert w1 is not w2
+
+    def test_agent_pool_get_or_create_alias(self, mock_session_store):
+        """AgentPool.get_or_create is a backward-compat alias for create_worker."""
+        from core.agent_registry import AgentRegistry
+
+        registry = AgentRegistry()
+        pool = AgentPool(
+            llm_config=LLMConfig(provider="openai", api_key="x", model="gpt-4"),
+            session_store=mock_session_store,
+            agent_registry=registry,
+        )
+        w1 = pool.get_or_create("planner")
+        w2 = pool.create_worker("planner")
+        assert w1 is not w2
+        assert type(w1) is type(w2)
 
 
 # =============================================================================

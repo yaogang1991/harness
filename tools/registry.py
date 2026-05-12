@@ -364,14 +364,23 @@ class ToolRegistry:
                     timeout=timeout,
                     cwd=str(run_cwd),
                 )
-            output = result.stdout
-            if result.stderr:
-                output += "\n" + result.stderr
+            # Normalize result: subprocess.CompletedProcess vs CommandResult
+            if hasattr(result, "returncode"):
+                returncode = result.returncode
+                stdout = result.stdout
+                stderr = result.stderr
+            else:
+                returncode = 0 if getattr(result, "success", True) else 1
+                stdout = getattr(result, "stdout", "")
+                stderr = getattr(result, "stderr", "")
+            output = stdout
+            if stderr:
+                output += "\n" + stderr
             return ToolResult(
                 tool_call_id="",
-                success=result.returncode == 0,
+                success=returncode == 0,
                 output=output,
-                error=result.stderr if result.returncode != 0 else "",
+                error=stderr if returncode != 0 else "",
             )
         except subprocess.TimeoutExpired:
             return ToolResult(tool_call_id="", success=False, error=f"Command timed out after {timeout}s")
