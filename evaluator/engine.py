@@ -282,6 +282,13 @@ class EvaluatorEngine:
             if not output_artifacts:
                 return True, "No files to lint (passed by default)", True
             passed, msg = self._run_lint(output_artifacts, Path(work_dir))
+            # When no linter is available, treat as uncheckable (WARN)
+            # rather than hard FAIL — missing tool != bad code (#200).
+            if not passed and "No linter available" in msg:
+                return True, (
+                    f"Lint skipped: {msg}. "
+                    f"Install flake8 or ruff for lint checking."
+                ), False
             return passed, msg, True
 
         if crit.type == CriterionType.FILE_EXISTS:
