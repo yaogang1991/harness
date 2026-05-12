@@ -420,32 +420,28 @@ Return a JSON object with this exact structure:
         """
         Extract JSON from LLM response (handles markdown code blocks).
 
-        Tries multiple extraction strategies with individual error handling.
-        For truncated JSON (common when response hits max_tokens), attempts
-        to repair unclosed braces/quotes before giving up.
+        Collects candidate substrings from multiple strategies, tries
+        json.loads on each, and only attempts repair on truly truncated
+        candidates (unclosed braces at end-of-text).
+
         Returns None when no valid JSON can be extracted.
         """
         text = text.strip()
+        candidates: list[str] = []
 
-        # Strategy 1: Try to find JSON inside ```json ... ``` blocks
+        # Strategy 1: JSON inside ```json ... ``` blocks
         json_block_match = re.search(r"```json\s*\n(.*?)```", text, re.DOTALL)
         if json_block_match:
-            try:
-                return json.loads(json_block_match.group(1).strip())
-            except json.JSONDecodeError:
-                pass
+            candidates.append(json_block_match.group(1).strip())
 
-        # Strategy 2: Try to find JSON inside generic ``` ... ``` blocks
+        # Strategy 2: JSON inside generic ``` ... ``` blocks
         generic_block_match = re.search(r"```\s*\n(.*?)```", text, re.DOTALL)
         if generic_block_match:
             candidate = generic_block_match.group(1).strip()
             if candidate.startswith("{") or candidate.startswith("["):
-                try:
-                    return json.loads(candidate)
-                except json.JSONDecodeError:
-                    pass
+                candidates.append(candidate)
 
-        # Strategy 3: Find the first top-level JSON object using brace matching
+        # Strategy 3: First top-level JSON object via brace matching
         brace_depth = 0
         start = None
         for i, ch in enumerate(text):
@@ -456,28 +452,36 @@ Return a JSON object with this exact structure:
             elif ch == '}':
                 brace_depth -= 1
                 if brace_depth == 0 and start is not None:
-                    candidate = text[start:i + 1]
-                    try:
-                        return json.loads(candidate)
-                    except json.JSONDecodeError:
-                        start = None
-                        continue
+                    candidates.append(text[start:i + 1])
+                    start = None
 
-        # Strategy 4: Attempt to repair truncated JSON
+        # Strategy 4: Truncated JSON (unclosed braces at end-of-text)
         if start is not None and brace_depth > 0:
-            candidate = text[start:]
-            # Close unclosed quotes
-            quote_count = candidate.count('"') - candidate.count('\\"')
-            if quote_count % 2:
-                candidate += '"'
-            # Close unclosed braces
-            candidate += '}' * brace_depth
+            candidates.append(self._repair_truncated_json(text[start:], brace_depth))
+
+        # Try each candidate in order — first valid wins
+        for candidate in candidates:
             try:
-                return json.loads(candidate)
-            except json.JSONDecodeError:
-                pass
+                result = json.loads(candidate)
+                if isinstance(result, dict):
+                    return result
+            except (json.JSONDecodeError, ValueError):
+                continue
 
         return None
+
+    @staticmethod
+    def _repair_truncated_json(text: str, brace_depth: int) -> str:
+        """Attempt to close a truncated JSON object by appending missing
+        closing quotes and braces.  Only handles genuine truncation
+        (unclosed braces), not complete-but-malformed JSON."""
+        # Close unclosed quotes (odd number of unescaped ")
+        quote_count = text.count('"') - text.count('\\"')
+        if quote_count % 2:
+            text += '"'
+        # Close unclosed braces
+        text += '}' * brace_depth
+        return text
 
     async def replan(self, dag: DAG, failed_node_id: str, requirement: str = "") -> DAG:
         """
