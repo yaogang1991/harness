@@ -37,6 +37,7 @@ class EvaluatorEngine:
 
     def __init__(self, session_store: SessionStore):
         self.session_store = session_store
+        self._last_autofixed: list[str] = []
 
     def evaluate_stage(
         self,
@@ -100,6 +101,17 @@ class EvaluatorEngine:
             EventType.EVAL_RESULT,
             result.model_dump(),
         )
+
+        if self._last_autofixed:
+            self.session_store.emit_event(
+                session_id,
+                EventType.EVAL_AUTOFIX_APPLIED,
+                {
+                    "tool": "autoflake",
+                    "files": self._last_autofixed,
+                    "stage": stage_name,
+                },
+            )
 
         return result
 
@@ -253,9 +265,8 @@ class EvaluatorEngine:
 
         Phase 1 (auto-fix): Runs autoflake --remove-all-unused-imports
         --remove-unused-variables --in-place on resolved targets only.
-        This mutates the working tree — the evaluator is NOT a pure
-        read-only verifier.  Job output may differ from the generator's
-        original files as a result.
+        Snapshots file contents before/after to detect which files were
+        actually modified.
 
         Phase 2 (verify): Runs flake8 (or ruff as fallback) on the same
         targets.  If autoflake is not installed, the verify phase proceeds
@@ -263,19 +274,27 @@ class EvaluatorEngine:
 
         Only lints specific files — does NOT recursively scan directories.
         """
+        self._last_autofixed = []
+
         resolved = []
         for t in targets:
             p = work_dir / t
             if p.is_file():
                 resolved.append(str(p))
             elif p.is_dir():
-                # Only include direct .py children, don't recurse
                 for f in p.glob("*.py"):
                     resolved.append(str(f))
             elif Path(t).is_file():
                 resolved.append(str(Path(t)))
         if not resolved:
             return True, "No targets to lint"
+
+        # Snapshot file contents before autoflake.
+        pre_contents: dict[str, bytes] = {}
+        for fpath in resolved:
+            p = Path(fpath)
+            if p.exists():
+                pre_contents[fpath] = p.read_bytes()
 
         # Auto-fix unused imports / variables before linting (graceful
         # degradation if autoflake is not installed).
@@ -294,6 +313,18 @@ class EvaluatorEngine:
         except Exception:
             pass
 
+        # Detect which files autoflake actually changed.
+        autofixed: list[str] = []
+        for fpath, pre in pre_contents.items():
+            p = Path(fpath)
+            if p.exists() and p.read_bytes() != pre:
+                try:
+                    autofixed.append(str(p.relative_to(work_dir)))
+                except ValueError:
+                    autofixed.append(p.name)
+
+        self._last_autofixed = autofixed
+
         try:
             result = subprocess.run(
                 ["python", "-m", "flake8"] + resolved + ["--max-line-length=100"],
@@ -301,8 +332,9 @@ class EvaluatorEngine:
                 encoding="utf-8", errors="replace", timeout=60,
             )
             if result.returncode == 0:
-                return True, "Lint clean"
-            return False, f"Lint issues:\n{result.stdout[:500]}"
+                msg = "Lint clean"
+            else:
+                msg = f"Lint issues:\n{result.stdout[:500]}"
         except FileNotFoundError:
             try:
                 result = subprocess.run(
@@ -311,12 +343,19 @@ class EvaluatorEngine:
                     encoding="utf-8", errors="replace", timeout=60,
                 )
                 if result.returncode == 0:
-                    return True, "Ruff clean"
-                return False, f"Ruff issues:\n{result.stdout[:500]}"
+                    msg = "Ruff clean"
+                else:
+                    msg = f"Ruff issues:\n{result.stdout[:500]}"
             except FileNotFoundError:
                 return False, "No linter available (install flake8 or ruff)"
         except Exception as e:
             return False, f"Lint error: {e}"
+
+        if autofixed:
+            autofix_msg = f"Autoflake auto-fixed: {', '.join(autofixed)}"
+            msg = f"{autofix_msg}\n{msg}"
+
+        return result.returncode == 0, msg
 
     def _check_files_exist(self, files: list[str], base: Path) -> tuple[bool, str]:
         missing = [f for f in files if not (base / f).exists()]
