@@ -1289,6 +1289,10 @@ Examples:
         "--non-interactive", action="store_true",
         help="Auto-approve all tool calls (no human approval needed)",
     )
+    exec_parser.add_argument(
+        "--pass-threshold", type=float, default=None,
+        help="Evaluation pass threshold >0-10 (default: strict, all criteria must pass)",
+    )
     exec_parser.set_defaults(func=cmd_execute)
 
     # run command (plan + execute)
@@ -1502,6 +1506,14 @@ Examples:
     impact_history_parser.set_defaults(func=cmd_impact_history)
 
     args = parser.parse_args()
+
+    # Validate --pass-threshold range (0, 10] early for clear error messages.
+    _threshold = getattr(args, "pass_threshold", None)
+    if _threshold is not None:
+        if _threshold <= 0 or _threshold > 10:
+            parser.error(
+                f"--pass-threshold must be in range (0, 10], got {_threshold}"
+            )
 
     if not args.command:
         parser.print_help()

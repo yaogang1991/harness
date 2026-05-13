@@ -113,6 +113,17 @@ class EvaluatorEngine:
     list[SuccessCriterion] (structured).
     """
 
+    # Hard criteria that can never be downgraded from FAIL to WARN,
+    # even when the overall score meets pass_threshold.  These represent
+    # fundamental correctness checks that must always pass (#194 review).
+    HARD_CRITERIA: set[CriterionType] = {
+        CriterionType.FILE_EXISTS,
+        CriterionType.FILE_PATTERN,
+        CriterionType.TESTS_PASS,
+        CriterionType.PATTERN_PRESENT,
+        CriterionType.PATTERN_ABSENT,
+    }
+
     def __init__(
         self,
         session_store: SessionStore,
@@ -122,11 +133,16 @@ class EvaluatorEngine:
         # When set, score >= threshold means overall pass even if some
         # criteria fail (reported as WARNING instead of FAIL).  None = strict
         # mode (all criteria must pass, same as before #194).
-        if pass_threshold is not None and pass_threshold <= 0:
-            raise ValueError(
-                f"pass_threshold must be > 0, got {pass_threshold}. "
-                "A threshold of 0 would pass all criteria regardless."
-            )
+        if pass_threshold is not None:
+            if pass_threshold <= 0:
+                raise ValueError(
+                    f"pass_threshold must be > 0, got {pass_threshold}. "
+                    "A threshold of 0 would pass all criteria regardless."
+                )
+            if pass_threshold > 10:
+                raise ValueError(
+                    f"pass_threshold must be <= 10, got {pass_threshold}."
+                )
         self.pass_threshold = pass_threshold
         self._last_autofixed: list[str] = []
         self._last_lint_new_issues: list[str] = []
@@ -153,6 +169,7 @@ class EvaluatorEngine:
         structured = self._normalize_criteria(criteria)
 
         results: dict[str, bool] = {}
+        hard_labels: set[str] = set()  # labels for hard (non-overrideable) criteria
         score = 0.0
         feedback_parts: list[str] = []
         uncheckable: list[str] = []
@@ -161,6 +178,8 @@ class EvaluatorEngine:
             passed, msg, auto = self._check_criterion(crit, eval_dir, output_artifacts)
             label = crit.description or crit.path or crit.test_path or crit.type.value
             results[label] = passed
+            if crit.type in self.HARD_CRITERIA:
+                hard_labels.add(label)
             if passed:
                 score += 10.0 / max(len(structured), 1)
             if auto:
@@ -176,15 +195,24 @@ class EvaluatorEngine:
         # When pass_threshold is set, score >= threshold allows overall pass
         # even if some auto-checked criteria fail.  Failed criteria are
         # reported as WARNING instead of FAIL.
+        # Hard criteria (FILE_EXISTS, TESTS_PASS, PATTERN_PRESENT) can never
+        # be overridden — if any hard criterion fails, overall result is FAIL.
         failed_auto = [
             label for label, ok in results.items() if not ok
         ]
+        failed_hard = [label for label in failed_auto if label in hard_labels]
         if self.pass_threshold is not None and not all_auto_passed:
-            if score >= self.pass_threshold:
-                # Downgrade failed criteria from FAIL to WARN in feedback
+            # Hard criteria veto threshold override
+            if failed_hard:
+                overall_passed = False
+            elif score >= self.pass_threshold:
+                # Downgrade SOFT failed criteria from FAIL to WARN in feedback.
+                # Hard criteria failures are left as FAIL (should not happen here
+                # since failed_hard check above would have caught them).
+                soft_failed = [l for l in failed_auto if l not in hard_labels]
                 feedback_parts_new: list[str] = []
                 for part in feedback_parts:
-                    for label in failed_auto:
+                    for label in soft_failed:
                         prefix = f"FAIL {label}:"
                         if part.startswith(prefix):
                             part = f"WARN {part[5:]}"
