@@ -400,10 +400,6 @@ class ToolRegistry:
                 returncode = result.returncode
                 stdout = result.stdout
                 stderr = result.stderr
-            else:
-                returncode = 0 if getattr(result, "success", True) else 1
-                stdout = getattr(result, "stdout", "")
-                stderr = getattr(result, "stderr", "")
             output = f"[cwd] {run_cwd}\n{stdout}"
             if stderr:
                 output += "\n" + stderr

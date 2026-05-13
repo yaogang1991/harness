@@ -74,6 +74,41 @@ class TestBuildRuntimeContext:
         ctx = agent._build_runtime_context()
         assert "PROJECT_ROOT:" in ctx
 
+    def test_runtime_env_appears_exactly_once_in_prompt(self):
+        """## Runtime Environment must appear exactly once in the final prompt
+        built by _execute_inner (no duplicate method definitions or calls).
+        """
+        import asyncio
+        from core.models import HandoffArtifact
+
+        agent = self._make_agent(base_cwd="/tmp/project")
+
+        # Monkey-patch _run_with_tools to capture the prompt instead of
+        # actually running the LLM loop.
+        captured_prompt: dict[str, str] = {}
+
+        async def _fake_run(prompt, session_id, context=None):
+            captured_prompt["value"] = prompt
+            return {"status": "completed", "summary": "", "artifacts": [], "output": ""}
+
+        agent._run_with_tools = _fake_run
+
+        asyncio.run(
+            agent._execute_inner(
+                task="do something",
+                input_artifacts=[],
+                session_id="test-session",
+                node_id="n1",
+            )
+        )
+
+        prompt = captured_prompt["value"]
+        count = prompt.count("## Runtime Environment")
+        assert count == 1, (
+            f"Expected exactly 1 '## Runtime Environment' in prompt, "
+            f"found {count}. Prompt:\n{prompt}"
+        )
+
 
 # =============================================================================
 # Bash tool schema and output
