@@ -68,7 +68,8 @@ Return a JSON object with this exact structure:
   ],
   "edges": [
     {{"from": "plan", "to": "impl"}},
-    {{"from": "impl", "to": "eval"}}
+    {{"from": "impl", "to": "eval"}},
+    {{"from": "eval_quality", "to": "report", "dependency_type": "soft"}}
   ]
 }}
 
@@ -93,6 +94,20 @@ For planner nodes, either omit success_criteria or use CUSTOM type.
 For evaluator nodes, omit success_criteria entirely.
 
 For simple cases you MAY use plain strings like "tests pass" or "lint clean" — these will be auto-parsed — but structured objects are preferred for reliability.
+
+## Dependency Types
+
+Edges can specify `"dependency_type": "soft"` or `"dependency_type": "hard"` (default):
+
+- **hard** (default): If the upstream node fails, the downstream node is SKIPPED. Use for
+  data flow where downstream absolutely requires upstream output (e.g., generator → evaluator,
+  planner → generator).
+- **soft**: If the upstream node fails, the downstream node continues with a warning instead
+  of being skipped. Use for optional relationships where downstream can still produce useful
+  output without upstream (e.g., quality evaluator → report generator, optional lint check →
+  final summary).
+
+When `dependency_type` is omitted, it defaults to `"hard"` for safety.
 
 ## Important
 - Node IDs must be unique and descriptive (e.g., "plan", "impl_api", "eval")

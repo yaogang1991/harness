@@ -255,10 +255,21 @@ class DAGNode(BaseModel):
             self.id = f"node_{uuid.uuid4().hex[:8]}"
 
 
+class DependencyType(str, Enum):
+    """Dependency semantics for DAG edges (#271).
+
+    HARD: upstream FAILED → downstream SKIP (safe default)
+    SOFT: upstream FAILED → downstream continues with warning
+    """
+    HARD = "hard"
+    SOFT = "soft"
+
+
 class DAGEdge(BaseModel):
     """A directed edge from one node to another."""
     from_node: str
     to_node: str
+    dependency_type: DependencyType = DependencyType.HARD  # Safe default
 
 
 class DAG(BaseModel):
@@ -279,6 +290,10 @@ class DAG(BaseModel):
     def get_dependencies(self, node_id: str) -> list[str]:
         """Get all predecessor nodes."""
         return [e.from_node for e in self.edges if e.to_node == node_id]
+
+    def get_incoming_edges(self, node_id: str) -> list[DAGEdge]:
+        """Get all incoming edges for a node, with dependency_type (#271)."""
+        return [e for e in self.edges if e.to_node == node_id]
 
     def get_dependents(self, node_id: str) -> list[str]:
         """Get all successor nodes."""

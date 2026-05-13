@@ -22,6 +22,7 @@ from core.models import (
     DAG,
     DAGNode,
     DAGEdge,
+    DependencyType,
     FailureDecision,
     AgentCapability,
     OrchestratorPlan,
@@ -246,7 +247,16 @@ class IntelligentOrchestrator:
             dag.add_node(node)
 
         for edge_def in plan.edges:
-            dag.add_edge(edge_def["from"], edge_def["to"])
+            dep_type = DependencyType.HARD  # Safe default
+            if isinstance(edge_def, dict):
+                dep_type_str = edge_def.get("dependency_type", "hard")
+                if dep_type_str == "soft":
+                    dep_type = DependencyType.SOFT
+            dag.edges.append(DAGEdge(
+                from_node=edge_def["from"] if isinstance(edge_def, dict) else edge_def["from"],
+                to_node=edge_def["to"] if isinstance(edge_def, dict) else edge_def["to"],
+                dependency_type=dep_type,
+            ))
 
         return dag
 

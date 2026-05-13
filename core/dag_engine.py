@@ -27,6 +27,7 @@ from core.models import (
     NodeStatus,
     NodeHealth,
     EvalStatus,
+    DependencyType,
     ExecutionEvent,
     FailureDecision,
     HandoffArtifact,
@@ -562,25 +563,37 @@ class DAGExecutionEngine:
         if node.status not in (NodeStatus.PENDING, NodeStatus.RETRYING):
             return
 
-        # Dependency-aware skip: only skip if a direct dependency failed (#259).
-        # Unlike _skip_remaining (which skips entire levels), this allows nodes
-        # whose dependencies all succeeded to continue executing.
-        deps = dag.get_dependencies(node_id)
-        failed_deps = [
-            d for d in deps
-            if dag.nodes[d].status in (NodeStatus.FAILED, NodeStatus.SKIPPED)
-        ]
-        if failed_deps:
+        # Dependency-aware skip with hard/soft semantics (#259, #271).
+        # HARD dependency: upstream FAILED → downstream SKIP
+        # SOFT dependency: upstream FAILED → downstream continues with warning
+        incoming_edges = dag.get_incoming_edges(node_id)
+        hard_failed_deps = []
+        soft_failed_deps = []
+        for edge in incoming_edges:
+            dep_status = dag.nodes[edge.from_node].status
+            if dep_status in (NodeStatus.FAILED, NodeStatus.SKIPPED):
+                if edge.dependency_type == DependencyType.SOFT:
+                    soft_failed_deps.append(edge.from_node)
+                else:
+                    hard_failed_deps.append(edge.from_node)
+
+        if hard_failed_deps:
             node.status = NodeStatus.SKIPPED
             node.error = (
-                f"Skipped: upstream dependencies {failed_deps} "
+                f"Skipped: hard dependencies {hard_failed_deps} "
                 f"failed/were skipped"
             )
             logger.info(
-                "Node %s skipped due to failed dependencies: %s",
-                node_id, failed_deps,
+                "Node %s skipped due to hard dependency failures: %s",
+                node_id, hard_failed_deps,
             )
             return
+
+        if soft_failed_deps:
+            logger.warning(
+                "Node %s proceeding despite soft dependency failures: %s",
+                node_id, soft_failed_deps,
+            )
 
         input_artifacts = self._collect_input_artifacts(dag, node_id)
 
@@ -945,12 +958,16 @@ class DAGExecutionEngine:
                 pass
 
     def _collect_input_artifacts(self, dag: DAG, node_id: str) -> list[HandoffArtifact]:
-        """Collect output artifacts from all dependency nodes."""
-        dependencies = dag.get_dependencies(node_id)
+        """Collect output artifacts from all dependency nodes.
+
+        For soft dependencies whose upstream failed, include a warning
+        artifact instead of upstream output (#271).
+        """
+        incoming_edges = dag.get_incoming_edges(node_id)
         artifacts = []
 
-        for dep_id in dependencies:
-            dep_node = dag.nodes[dep_id]
+        for edge in incoming_edges:
+            dep_node = dag.nodes[edge.from_node]
             if self._is_terminal_success(dep_node.status):
                 artifact = HandoffArtifact(
                     from_agent=dep_node.agent_type,
@@ -958,14 +975,14 @@ class DAGExecutionEngine:
                     content=dep_node.result.get("summary", ""),
                     file_paths=dep_node.output_artifacts,
                     metadata={
-                        "from_node": dep_id,
+                        "from_node": edge.from_node,
                         "task": dep_node.task_description,
                     },
                 )
                 artifacts.append(artifact)
 
                 # Pass auto-eval results to downstream evaluator agents (#145).
-                # Only pass when dep_node is SUCCESS (already guaranteed by the
+                # Only pass when dep_node is terminal success (guaranteed by
                 # enclosing if) AND auto_eval_result corresponds to the current
                 # output_artifacts (i.e., evaluation passed).
                 if (
@@ -1024,6 +1041,27 @@ class DAGExecutionEngine:
                         )
                     except Exception as e:
                         logger.debug("Memory sharing failed: %s", e)
+
+            elif (
+                dep_node.status in (NodeStatus.FAILED, NodeStatus.SKIPPED)
+                and edge.dependency_type == DependencyType.SOFT
+            ):
+                # Soft dependency failed — include warning for downstream (#271).
+                artifacts.append(HandoffArtifact(
+                    from_agent=dep_node.agent_type,
+                    to_agent=dag.nodes[node_id].agent_type,
+                    content=(
+                        f"WARNING: Soft dependency '{edge.from_node}' "
+                        f"failed (status: {dep_node.status.value}). "
+                        f"Proceeding without its output. "
+                        f"Error: {dep_node.error[:200]}"
+                    ),
+                    metadata={
+                        "from_node": edge.from_node,
+                        "type": "soft_dependency_warning",
+                        "dep_status": dep_node.status.value,
+                    },
+                ))
 
         # Include evaluation feedback from previous attempt (retry scenario)
         node = dag.nodes[node_id]
