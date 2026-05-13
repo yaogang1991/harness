@@ -756,6 +756,10 @@ class DAGExecutionEngine:
                                     "artifacts": node.output_artifacts.copy(),
                                     "feedback": eval_result.feedback,
                                     "lint_issues": current_issues,
+                                    "artifact_set": set(node.output_artifacts or []),
+                                    "file_snapshot": self._capture_file_snapshot(
+                                        eval_work_dir, node.output_artifacts,
+                                    ),
                                 }
                             else:
                                 is_regression = True
@@ -774,6 +778,9 @@ class DAGExecutionEngine:
                                 "feedback": eval_result.feedback,
                                 "lint_issues": current_issues,
                                 "artifact_set": set(node.output_artifacts or []),
+                                "file_snapshot": self._capture_file_snapshot(
+                                    eval_work_dir, node.output_artifacts,
+                                ),
                             }
                         logger.warning(
                             "Node %s retry score %.1f <= best %.1f "
