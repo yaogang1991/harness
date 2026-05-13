@@ -226,6 +226,25 @@ class EvaluatorEngine:
         else:
             overall_passed = all_auto_passed
 
+        # Mandatory artifact verification (#234): verify output_artifacts
+        # actually exist on disk. Prevents false positives when a generator
+        # reports creating files that were never actually written.
+        if output_artifacts and eval_dir:
+            eval_root = Path(eval_dir)
+            phantom = []
+            for art in output_artifacts:
+                p = Path(art)
+                full = p if p.is_absolute() else eval_root / p
+                if not full.is_file():
+                    phantom.append(art)
+            if phantom:
+                overall_passed = False
+                score = 0.0
+                feedback_parts.append(
+                    f"FAIL artifact_verification: {len(phantom)} reported "
+                    f"artifact(s) not found on disk: {phantom}"
+                )
+
         feedback = "\n".join(feedback_parts)
         if has_uncheckable:
             feedback += (
@@ -380,7 +399,7 @@ class EvaluatorEngine:
             for cand in candidates:
                 p = Path(cand)
                 full = p if p.is_absolute() else eval_root / p
-                if full.is_file() and full.stat().st_size > 0:
+                if full.is_file():
                     verified.append(str(full))
                     continue
                 # Fallback: loose glob match by stem.
@@ -389,7 +408,7 @@ class EvaluatorEngine:
                     matches = list(eval_root.glob(f"**/*{stem}*"))
                     matches = [
                         m for m in matches
-                        if m.is_file() and m.stat().st_size > 0
+                        if m.is_file()
                     ]
                     if matches:
                         verified.append(str(matches[0]))
@@ -792,7 +811,7 @@ class EvaluatorEngine:
 
         for alt in alternatives:
             alt_path = base / alt
-            if alt_path.is_file() and alt_path.stat().st_size > 0:
+            if alt_path.is_file():
                 return str(alt_path)
 
         return None
@@ -1047,12 +1066,12 @@ class EvaluatorEngine:
 
         files = [
             m for m in matches
-            if m.is_file() and m.stat().st_size > 0
+            if m.is_file()
         ]
 
         if not files:
             return False, (
-                f"No non-empty files matched pattern: {pattern} "
+                f"No files matched pattern: {pattern} "
                 f"(searched in {work_dir})"
             ), True
 
