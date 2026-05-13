@@ -123,19 +123,31 @@ class AgentWorker:
                 tool_name = tc["name"]
                 args = tc.get("arguments", {})
                 required = TOOL_REQUIRED_ARGS.get(tool_name, [])
-                missing = [k for k in required if k not in args or not args[k]]
+                missing = [k for k in required if k not in args or args[k] is None]
 
                 if missing:
+                    error_content = (
+                        f"Error: '{tool_name}' tool is missing required argument(s): "
+                        f"{', '.join(missing)}. "
+                        f"Your call had arguments: {json.dumps(args)}. "
+                        f"Please retry with all required arguments."
+                    )
                     tool_results.append({
                         "role": "tool",
                         "tool_call_id": tool_call_id,
-                        "content": (
-                            f"Error: '{tool_name}' tool is missing required argument(s): "
-                            f"{', '.join(missing)}. "
-                            f"Your call had arguments: {json.dumps(args)}. "
-                            f"Please retry with all required arguments."
-                        ),
+                        "content": error_content,
                     })
+                    # Emit AGENT_TOOL_RESULT for observability (#215)
+                    self.session_store.emit_event(
+                        session_id,
+                        EventType.AGENT_TOOL_RESULT,
+                        {
+                            "tool": tool_name,
+                            "success": False,
+                            "error": error_content,
+                            "tool_call_id": tool_call_id,
+                        },
+                    )
                     logger.warning("Tool %s called with missing args: %s", tool_name, missing)
                     continue
 
