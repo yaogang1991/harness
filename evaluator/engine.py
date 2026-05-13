@@ -746,6 +746,14 @@ class EvaluatorEngine:
             if output_artifacts:
                 test_targets = self._find_test_files(output_artifacts, work_dir)
 
+            if not test_targets and output_artifacts:
+                return (
+                    False,
+                    "No test files found for coverage check — "
+                    "cannot verify coverage without scoped tests.",
+                    False,
+                )
+
             if test_targets:
                 for t in test_targets:
                     p = Path(t)
