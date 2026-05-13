@@ -670,12 +670,14 @@ class TestOrchestratorReplanMethod:
     """Tests for IntelligentOrchestrator.replan() method."""
 
     def test_replan_prompt_template_exists(self):
-        """The REPLAN_PROMPT_TEMPLATE class attribute is defined."""
+        """The replan prompt is loadable via PromptRegistry."""
+        from orchestrator.prompts import PromptRegistry
+        prompt = PromptRegistry().load("replan")
         assert hasattr(IntelligentOrchestrator, "REPLAN_PROMPT_TEMPLATE")
-        assert "{executed_nodes}" in IntelligentOrchestrator.REPLAN_PROMPT_TEMPLATE
-        assert "{failed_node}" in IntelligentOrchestrator.REPLAN_PROMPT_TEMPLATE
-        assert "{failed_error}" in IntelligentOrchestrator.REPLAN_PROMPT_TEMPLATE
-        assert "{agent_descriptions}" in IntelligentOrchestrator.REPLAN_PROMPT_TEMPLATE
+        assert "{executed_nodes}" in prompt
+        assert "{failed_node}" in prompt
+        assert "{failed_error}" in prompt
+        assert "{agent_descriptions}" in prompt
 
     @pytest.mark.asyncio
     async def test_replan_returns_new_dag(self, tmp_path: Path):
