@@ -12,20 +12,25 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from orchestrator.intelligent_orchestrator import IntelligentOrchestrator
+from orchestrator.prompts import PromptRegistry
 from agent.agent_pool import WorkerAgent
 
 
 class TestPlannerNamingConvention:
     """Planner prompt must include rules for cross-node naming consistency."""
 
+    @pytest.fixture(autouse=True)
+    def _load_prompt(self):
+        self._registry = PromptRegistry()
+
     def test_planner_mentions_naming_contract(self):
-        prompt = IntelligentOrchestrator.PLANNING_PROMPT_TEMPLATE
+        prompt = self._registry.load("planning")
         assert "NAMING CONTRACT" in prompt, (
             "Planner prompt must mention NAMING CONTRACT for parallel nodes"
         )
 
     def test_planner_mentions_serialize_preference(self):
-        prompt = IntelligentOrchestrator.PLANNING_PROMPT_TEMPLATE
+        prompt = self._registry.load("planning")
         assert "serialize" in prompt.lower(), (
             "Planner prompt must mention serialization as preferred option"
         )
@@ -34,13 +39,13 @@ class TestPlannerNamingConvention:
         )
 
     def test_planner_mentions_cross_node_rule(self):
-        prompt = IntelligentOrchestrator.PLANNING_PROMPT_TEMPLATE
+        prompt = self._registry.load("planning")
         assert "Cross-node naming" in prompt or "cross-node" in prompt.lower(), (
             "Planner prompt must have a cross-node naming consistency rule"
         )
 
     def test_planner_gives_naming_example(self):
-        prompt = IntelligentOrchestrator.PLANNING_PROMPT_TEMPLATE
+        prompt = self._registry.load("planning")
         assert "TokenBucket" in prompt, (
             "Planner prompt must include a concrete naming example"
         )
@@ -81,8 +86,12 @@ class TestGeneratorNamingConvention:
 class TestNamingConventionExample:
     """Verify the naming example in planner prompt is concrete and correct."""
 
+    @pytest.fixture(autouse=True)
+    def _load_prompt(self):
+        self._registry = PromptRegistry()
+
     def test_example_includes_not_alternative(self):
-        prompt = IntelligentOrchestrator.PLANNING_PROMPT_TEMPLATE
+        prompt = self._registry.load("planning")
         assert "not TokenBucketLimiter" in prompt, (
             "Example should show the WRONG name to avoid, using the exact "
             "name from the #265 bug report"

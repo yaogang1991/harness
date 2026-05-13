@@ -91,8 +91,8 @@ class TestPlanValidatorStdlibShadow:
 
 class TestPlannerPromptStdlibGuidance:
     def test_planning_prompt_mentions_stdlib(self):
-        from orchestrator.intelligent_orchestrator import IntelligentOrchestrator
-        prompt = IntelligentOrchestrator.PLANNING_PROMPT_TEMPLATE
+        from orchestrator.prompts import PromptRegistry
+        prompt = PromptRegistry().load("planning")
         assert "stdlib" in prompt.lower()
         assert "urllib" in prompt
         assert "shadowing" in prompt.lower() or "shadow" in prompt.lower()

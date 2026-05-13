@@ -170,15 +170,15 @@ class TestPromptUpdates:
     """Verify planner and generator prompts contain the new rules."""
 
     def test_planner_prompt_has_file_pattern(self):
-        from orchestrator.intelligent_orchestrator import IntelligentOrchestrator
-        prompt = IntelligentOrchestrator.PLANNING_PROMPT_TEMPLATE
+        from orchestrator.prompts import PromptRegistry
+        prompt = PromptRegistry().load("planning")
         assert "file_pattern" in prompt
         assert "file_exists" in prompt
         assert "exact file path matters" in prompt.lower() or "exact" in prompt.lower()
 
     def test_planner_prompt_has_file_exists_vs_pattern_guidance(self):
-        from orchestrator.intelligent_orchestrator import IntelligentOrchestrator
-        prompt = IntelligentOrchestrator.PLANNING_PROMPT_TEMPLATE
+        from orchestrator.prompts import PromptRegistry
+        prompt = PromptRegistry().load("planning")
         assert "file_exists vs file_pattern" in prompt or "file_exists" in prompt
 
     def test_generator_prompt_has_path_contract(self):

@@ -104,7 +104,9 @@ class TestRetryFeedbackContent:
 class TestOrchestratorErrorVisibility:
     def test_adaptation_uses_full_error(self):
         """adapt_to_failure sees up to 2000 chars of error, not just 500."""
+        from orchestrator.prompts import PromptRegistry
         orchestrator = IntelligentOrchestrator.__new__(IntelligentOrchestrator)
+        orchestrator._prompt_registry = PromptRegistry()
         orchestrator.llm = MagicMock()
         orchestrator.llm.call = MagicMock(return_value={
             "content": '{"action": "retry", "reasoning": "fix lint"}',
@@ -116,7 +118,7 @@ class TestOrchestratorErrorVisibility:
             return_value={"action": "retry", "reasoning": "fix lint"},
         ):
             import asyncio
-            decision = asyncio.get_event_loop().run_until_complete(
+            decision = asyncio.run(
                 orchestrator.adapt_to_failure(dag, "impl", dag.nodes["impl"].error),
             )
 
