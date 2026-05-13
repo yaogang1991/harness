@@ -70,6 +70,8 @@ class TestSyncSandboxAdapter:
         assert result.stderr == "command not found"
 
     def test_adapter_handles_timeout(self):
+        from backend.sandbox import CommandResult
+
         mock_sandbox = MagicMock()
 
         def slow_command(*args, **kwargs):
