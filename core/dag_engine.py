@@ -573,9 +573,23 @@ class DAGExecutionEngine:
                     self._is_tests_pass_criterion(c) for c in node.success_criteria
                 )
                 if has_tests_criteria:
+                    # Broader test file detection: test_*.py, *_test.py, *_spec.py,
+                    # files under tests/ or test/ directories
+                    def _is_test_file(artifact_path: str) -> bool:
+                        basename = artifact_path.lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+                        if basename.startswith("test_") or basename.endswith("_test.py"):
+                            return True
+                        if basename.endswith("_spec.py"):
+                            return True
+                        # Files inside tests/ or test/ directories
+                        lower_path = artifact_path.lower()
+                        if "/tests/" in lower_path or "/test/" in lower_path:
+                            if basename.endswith(".py"):
+                                return True
+                        return False
+
                     has_test_files = any(
-                        "test" in a.lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-                        for a in node.output_artifacts
+                        _is_test_file(a) for a in node.output_artifacts
                     )
                     if not has_test_files:
                         logger.warning(
