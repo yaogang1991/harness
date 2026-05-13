@@ -1,8 +1,9 @@
 """
 Tests for #240: pre-run check for stdlib-shadowing directories.
 
-Verifies _check_stdlib_shadowing detects and removes leftover directories
-that shadow Python stdlib modules.
+Verifies _check_stdlib_shadowing detects and warns about leftover directories
+that shadow Python stdlib modules. Non-interactive mode only warns — does NOT
+auto-delete user files (#246 review).
 """
 import os
 import pytest
@@ -13,24 +14,25 @@ from main import _check_stdlib_shadowing
 
 
 class TestCheckStdlibShadowing:
-    def test_detects_urllib_directory(self, tmp_path):
-        """Detects urllib/ as stdlib shadow."""
+    def test_non_interactive_warns_keeps_urllib(self, tmp_path, capsys):
+        """Non-interactive: warns but does NOT remove directories."""
         (tmp_path / "urllib").mkdir()
         (tmp_path / "urllib" / "__init__.py").write_text("# shadow", encoding="utf-8")
         with patch.dict(os.environ, {"HARNESS_NON_INTERACTIVE": "true"}):
             _check_stdlib_shadowing(str(tmp_path))
-        # Should be removed in non-interactive mode
-        assert not (tmp_path / "urllib").exists()
+        assert (tmp_path / "urllib").exists()
+        captured = capsys.readouterr()
+        assert "shadow" in captured.err.lower()
 
-    def test_detects_json_directory(self, tmp_path):
-        """Detects json/ as stdlib shadow."""
+    def test_non_interactive_warns_keeps_json(self, tmp_path, capsys):
+        """Non-interactive: warns but keeps json/ directory."""
         (tmp_path / "json").mkdir()
         with patch.dict(os.environ, {"HARNESS_NON_INTERACTIVE": "true"}):
             _check_stdlib_shadowing(str(tmp_path))
-        assert not (tmp_path / "json").exists()
+        assert (tmp_path / "json").exists()
 
     def test_preserves_non_stdlib_dirs(self, tmp_path):
-        """Does not remove directories that don't shadow stdlib."""
+        """Does not warn about directories that don't shadow stdlib."""
         (tmp_path / "myapp").mkdir()
         (tmp_path / "tests").mkdir()
         with patch.dict(os.environ, {"HARNESS_NON_INTERACTIVE": "true"}):
@@ -57,29 +59,31 @@ class TestCheckStdlibShadowing:
     def test_no_action_when_no_project(self):
         """No-op when project is None."""
         with patch.dict(os.environ, {"HARNESS_NON_INTERACTIVE": "true"}):
-            _check_stdlib_shadowing(None)  # Should not raise
+            _check_stdlib_shadowing(None)
 
     def test_no_action_when_project_missing(self):
         """No-op when project path doesn't exist."""
         with patch.dict(os.environ, {"HARNESS_NON_INTERACTIVE": "true"}):
-            _check_stdlib_shadowing("/nonexistent/path")  # Should not raise
+            _check_stdlib_shadowing("/nonexistent/path")
 
     def test_no_action_when_clean(self, tmp_path):
         """No-op when no shadowing directories exist."""
         (tmp_path / "myproject").mkdir()
         with patch.dict(os.environ, {"HARNESS_NON_INTERACTIVE": "true"}):
-            _check_stdlib_shadowing(str(tmp_path))  # Should not raise
+            _check_stdlib_shadowing(str(tmp_path))
 
-    def test_removes_multiple_shadows(self, tmp_path):
-        """Removes all shadowing directories at once."""
+    def test_non_interactive_warns_multiple(self, tmp_path, capsys):
+        """Non-interactive: warns about all shadows but keeps them all."""
         (tmp_path / "urllib").mkdir()
         (tmp_path / "json").mkdir()
         (tmp_path / "collections").mkdir()
         with patch.dict(os.environ, {"HARNESS_NON_INTERACTIVE": "true"}):
             _check_stdlib_shadowing(str(tmp_path))
-        assert not (tmp_path / "urllib").exists()
-        assert not (tmp_path / "json").exists()
-        assert not (tmp_path / "collections").exists()
+        assert (tmp_path / "urllib").exists()
+        assert (tmp_path / "json").exists()
+        assert (tmp_path / "collections").exists()
+        captured = capsys.readouterr()
+        assert "3 directory" in captured.err
 
     def test_interactive_keep(self, tmp_path, capsys):
         """Interactive mode: user chooses to keep directories."""
