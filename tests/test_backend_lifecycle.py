@@ -106,14 +106,30 @@ class TestRunHook:
         mock_bm.execute_hook.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_swallows_hook_error(self):
+    async def test_propagates_hook_error(self):
+        """Lifecycle hook errors propagate to caller (original RunService behavior)."""
         bls = BackendLifecycleService()
         mock_bm = MagicMock()
         mock_bm.execute_hook = AsyncMock(side_effect=RuntimeError("hook failed"))
-        hooks = {"after_create": "bad_command"}
+        hooks = {"before_run": "bad_command"}
 
-        # Should not raise
-        await bls.run_hook(mock_bm, "after_create", hooks, "/tmp/work")
+        with pytest.raises(RuntimeError, match="hook failed"):
+            await bls.run_hook(mock_bm, "before_run", hooks, "/tmp/work")
+
+    @pytest.mark.asyncio
+    async def test_before_run_failure_prevents_core_dag(self):
+        """Regression: before_run hook failure must propagate so RunService
+        enters failure flow instead of continuing to core DAG execution."""
+        bls = BackendLifecycleService()
+        mock_bm = MagicMock()
+        mock_bm.execute_hook = AsyncMock(side_effect=RuntimeError("env setup failed"))
+        hooks = {"before_run": "setup.sh"}
+
+        with pytest.raises(RuntimeError, match="env setup failed"):
+            await bls.run_hook(mock_bm, "before_run", hooks, "/tmp/work")
+
+        # Verify the hook was actually attempted (not skipped)
+        mock_bm.execute_hook.assert_called_once()
 
 
 class TestPreserveAndCleanup:

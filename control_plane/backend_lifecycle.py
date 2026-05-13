@@ -76,17 +76,16 @@ class BackendLifecycleService:
         hooks: dict[str, str],
         work_dir: str,
     ) -> None:
-        """Execute a lifecycle hook if configured."""
+        """Execute a lifecycle hook if configured.
+
+        Lifecycle hooks (after_create, before_run, after_run) propagate
+        exceptions to the caller so that the job failure flow handles them
+        consistently with the original RunService behavior.
+        """
         command = hooks.get(hook_name)
         if not command:
             return
-        try:
-            await backend_manager.execute_hook(hook_name, command, work_dir)
-        except Exception:
-            logger.warning(
-                "Hook %s failed (command: %s)", hook_name, command[:100],
-                exc_info=True,
-            )
+        await backend_manager.execute_hook(hook_name, command, work_dir)
 
     def preserve(
         self,
