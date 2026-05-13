@@ -91,5 +91,5 @@ class TestNestedFilePattern:
         )
         passed, msg, auto = engine._check_file_pattern(crit, tmp_path)
         assert passed is True
-        # Should find at least the flat file
         assert "main.py" in msg
+        assert "handler.py" in msg
