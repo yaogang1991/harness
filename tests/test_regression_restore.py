@@ -151,3 +151,87 @@ class TestRegressionRestore:
         assert (tmp_path / "main.py").read_text() == "def hello(): return 'hello'\n"
         # output_artifacts restored to best
         assert "main.py" in node.output_artifacts
+
+    @pytest.mark.asyncio
+    async def test_regression_removes_extra_files(self, tmp_path):
+        """When retry adds extra files and regresses, those files are deleted."""
+        from unittest.mock import AsyncMock
+
+        work_dir = str(tmp_path)
+
+        # First attempt: write good files
+        (tmp_path / "main.py").write_text("def hello(): return 'hello'\n", encoding="utf-8")
+        (tmp_path / "test_main.py").write_text("from main import hello\n", encoding="utf-8")
+
+        mock_evaluator = MagicMock()
+        # First eval: score 6.7 (not passed)
+        mock_evaluator.evaluate_stage.return_value = MagicMock(
+            passed=False, score=6.7,
+            feedback="Files missing",
+            metadata={"lint_new_issues": [], "lint_all_issues": []},
+        )
+
+        async def mock_executor(node, artifacts):
+            return {"artifacts": ["main.py", "test_main.py"]}
+
+        engine = DAGExecutionEngine(
+            agent_executor=mock_executor,
+            failure_handler=AsyncMock(),
+            work_dir=work_dir,
+            evaluator=mock_evaluator,
+        )
+
+        from core.models import DAG, DAGNode, NodeStatus
+
+        dag = DAG(reasoning="test")
+        node = DAGNode(
+            id="gen_1",
+            agent_type="generator",
+            task_description="test",
+            status=NodeStatus.PENDING,
+            success_criteria=["tests pass"],
+        )
+        dag.add_node(node)
+
+        await engine._execute_single_node(dag, "gen_1")
+
+        # Verify best attempt captured with artifact_set
+        best = engine._best_attempts.get("gen_1")
+        assert best is not None
+        assert "artifact_set" in best
+        assert "main.py" in best["artifact_set"]
+        assert "test_main.py" in best["artifact_set"]
+
+        # Now simulate a bad retry that corrupts main.py AND adds an extra file
+        (tmp_path / "main.py").write_text("BROKEN CODE!!!\n", encoding="utf-8")
+        (tmp_path / "extra_module.py").write_text("# unwanted file\n", encoding="utf-8")
+
+        # Override executor to return artifacts including the extra file
+        async def mock_executor_extra(node, artifacts):
+            return {"artifacts": ["main.py", "test_main.py", "extra_module.py"]}
+
+        engine.agent_executor = mock_executor_extra
+
+        # Second eval: score 3.3 (worse — regression)
+        mock_evaluator.evaluate_stage.return_value = MagicMock(
+            passed=False, score=3.3,
+            feedback="Code is broken",
+            metadata={"lint_new_issues": ["E999"], "lint_all_issues": ["E999"]},
+        )
+
+        node.status = NodeStatus.RETRYING
+        node.error = ""
+        node.retry_count = 0
+
+        await engine._execute_single_node(dag, "gen_1")
+
+        # After regression restore:
+        # 1. main.py should be restored to best content
+        assert (tmp_path / "main.py").read_text() == "def hello(): return 'hello'\n"
+        # 2. extra_module.py should be DELETED (not in best artifact set)
+        assert not (tmp_path / "extra_module.py").exists(), (
+            "extra_module.py should have been deleted during regression restore"
+        )
+        # 3. output_artifacts should be restored to best (without extra_module.py)
+        assert "extra_module.py" not in (node.output_artifacts or [])
+        assert "main.py" in node.output_artifacts

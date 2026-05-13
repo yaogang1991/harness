@@ -712,6 +712,7 @@ class DAGExecutionEngine:
                             "artifacts": node.output_artifacts.copy(),
                             "feedback": eval_result.feedback,
                             "lint_issues": current_issues,
+                            "artifact_set": set(node.output_artifacts or []),
                             "file_snapshot": self._capture_file_snapshot(
                                 eval_work_dir, node.output_artifacts,
                             ),
@@ -722,6 +723,7 @@ class DAGExecutionEngine:
                             "artifacts": node.output_artifacts.copy(),
                             "feedback": eval_result.feedback,
                             "lint_issues": current_issues,
+                            "artifact_set": set(node.output_artifacts or []),
                             "file_snapshot": self._capture_file_snapshot(
                                 eval_work_dir, node.output_artifacts,
                             ),
@@ -771,6 +773,7 @@ class DAGExecutionEngine:
                                 "artifacts": node.output_artifacts.copy(),
                                 "feedback": eval_result.feedback,
                                 "lint_issues": current_issues,
+                                "artifact_set": set(node.output_artifacts or []),
                             }
                         logger.warning(
                             "Node %s retry score %.1f <= best %.1f "
@@ -789,6 +792,24 @@ class DAGExecutionEngine:
                             self._restore_file_snapshot(
                                 eval_work_dir, prev_best["file_snapshot"],
                             )
+                            # Delete extra files added by the regression attempt
+                            # that were not present in the best artifact set.
+                            best_artifact_set = prev_best.get(
+                                "artifact_set", set(prev_best["file_snapshot"].keys()),
+                            )
+                            for artifact in (node.output_artifacts or []):
+                                if artifact not in best_artifact_set:
+                                    path = os.path.join(eval_work_dir, artifact)
+                                    try:
+                                        if os.path.isfile(path):
+                                            os.remove(path)
+                                            logger.info(
+                                                "Node %s: removed extra file %s "
+                                                "not in best attempt",
+                                                node_id, artifact,
+                                            )
+                                    except OSError:
+                                        pass
                             node.output_artifacts = prev_best["artifacts"]
                     node.retry_count += 1
                     # Build retry feedback with regression awareness.
