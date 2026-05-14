@@ -218,7 +218,7 @@ class AgentWorker:
             # calls (~7 min at typical latency).
             if all_invalid:
                 all_empty_dict = all(
-                    not tc.get("arguments")
+                    tc.get("arguments") == {}
                     for tc in assistant_message.get("tool_calls", [])
                 )
                 if all_empty_dict:
