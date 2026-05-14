@@ -132,16 +132,16 @@ class TestCriterionChecking:
             assert mock_run.call_count == 3
 
     def test_lint_autoflake_then_flake8_on_same_targets(self, evaluator, tmp_path):
-        """Autoflake dry-run and flake8 verify the same resolved files."""
+        """Autoflake in-place and flake8 verify the same resolved files (#283)."""
         (tmp_path / "code.py").write_text("import os\n", encoding="utf-8")
         with patch("evaluator.engine.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="")
             evaluator._run_lint(["code.py"], tmp_path)
             calls = mock_run.call_args_list
             autoflake_cmd = calls[0][0][0]
-            # Ensure dry-run mode: has --check, no --in-place
-            assert "--check" in autoflake_cmd
-            assert "--in-place" not in autoflake_cmd
+            # In-place mode: has --in-place, no --check (#283)
+            assert "--in-place" in autoflake_cmd
+            assert "--check" not in autoflake_cmd
             autopep8_cmd = calls[1][0][0]
             assert "autopep8" in autopep8_cmd[2]
             assert "--in-place" in autopep8_cmd
