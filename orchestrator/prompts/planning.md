@@ -40,6 +40,14 @@ Your job: Analyze the user's requirement and produce an execution plan (DAG).
     Use `hard` when downstream literally imports or depends on upstream artifacts. Use `soft` when upstream is informational (e.g., shared conventions, optional context).
 11. **Avoid unnecessary sibling edges**: Parallel implementation nodes (e.g., impl_core, impl_accounts, impl_api) should each depend ONLY on their shared planner/foundation node, NOT on each other. Edges between sibling impl nodes cause sequential execution and cascade-skip waste.
 12. **Separate source and test generation**: NEVER task a single generator node with both source module creation AND test file creation. Source modules and their tests must be in SEPARATE generator nodes (e.g., `impl_core` creates `mylib/core.py`, then `impl_tests_core` creates `tests/test_core.py`). A single node doing both runs out of token/iteration budget before reaching test creation (#340).
+14. **Force decomposition for large tasks**: A single generator node MUST NOT be
+    expected to create more than ~15 files. If the requirement needs more:
+    a. Extract shared models/schemas/config into a `impl_foundation` node (Level 0)
+    b. Create parallel `impl_<module>` nodes for each major subsystem, each depending
+       only on the foundation node
+    c. Create separate `impl_tests_<module>` nodes for each subsystem's tests
+    Example for a system with 6 modules: foundation → (impl_core, impl_api, impl_services) parallel → (impl_tests_core, impl_tests_api, impl_tests_services) parallel → eval.
+    This prevents LLM context exhaustion where a node creates 27/50 files then stops.
 13. **Reconcile with existing files**: If the project context includes
     `existing_files`, you MUST review them before planning. Decide for each
     existing file whether to REUSE it (reference in generator task descriptions

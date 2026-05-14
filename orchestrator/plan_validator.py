@@ -91,6 +91,11 @@ class PlanValidator:
     # Prevents JSON truncation when the LLM generates oversized DAGs.
     MAX_NODES = 10
 
+    # Maximum estimated file count per generator node (#284).
+    # Prevents a single node from being tasked with creating too many
+    # files, which causes LLM context exhaustion and partial output.
+    MAX_FILES_PER_NODE = 15
+
     def __init__(self, auto_fix: bool = False) -> None:
         # auto_fix is accepted for API compat but validation-only is always used
         self.auto_fix = auto_fix
@@ -170,6 +175,9 @@ class PlanValidator:
         # Stdlib shadowing detection (#238)
         self._check_stdlib_shadowing(nodes)
 
+        # Per-node file count estimation (#284)
+        self._check_node_file_count(nodes)
+
         return plan_data
 
     # Prefixes used for stdlib conflict renaming suggestions.
@@ -244,3 +252,38 @@ class PlanValidator:
                         f"Use a prefixed alternative "
                         f"(e.g., '{self.rename_map.get(conflict, 'my_' + conflict)}')."
                     )
+
+    def _check_node_file_count(self, nodes: list[dict]) -> None:
+        """Warn if a generator node's task mentions creating too many files.
+
+        Estimates file count from task description by counting patterns like
+        "create X.py", file paths, and explicit file counts. Only warns for
+        generator-type nodes (#284).
+        """
+        for node in nodes:
+            if node.get("agent_type") != "generator":
+                continue
+            task = node.get("task", "")
+            if not task:
+                continue
+            # Count explicit file paths (e.g., "foo.py", "dir/bar.py")
+            file_mentions = set(re.findall(
+                r'(?:[\w/]+\.)?[\w]+\.(?:py|yaml|yml|json|toml|cfg|txt)',
+                task,
+            ))
+            # Count "create/implement X" patterns for modules
+            create_patterns = re.findall(
+                r'(?:create|implement|build|write|add)\s+(?:a\s+|an\s+|the\s+)?'
+                r'(?:(?:new|Python|source)\s+)?'
+                r'(?:file|module|class|package)\s+'
+                r'[\w/.]+',
+                task, re.IGNORECASE,
+            )
+            estimated = max(len(file_mentions), len(create_patterns))
+            if estimated > self.MAX_FILES_PER_NODE:
+                self.warnings.append(
+                    f"Node '{node.get('id')}' is expected to create "
+                    f"~{estimated} files (limit: {self.MAX_FILES_PER_NODE}). "
+                    f"Decompose into multiple parallel generator nodes with a "
+                    f"shared foundation node to prevent context exhaustion."
+                )
