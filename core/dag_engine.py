@@ -81,6 +81,8 @@ class DAGExecutionEngine:
         alert_thresholds: dict[str, int] | None = None,
         # M3.4: Node timeout configuration (#360)
         node_timeout_config: Any | None = None,
+        # R3: Backend manager for workspace isolation and cleanup (#176, #240)
+        backend_manager: Any | None = None,
     ):
         self.agent_executor = agent_executor
         self.failure_handler = failure_handler
@@ -116,6 +118,8 @@ class DAGExecutionEngine:
         )
         # Best-attempt tracking to prevent retry regression (#129).
         self._best_attempts: dict[str, dict] = {}
+        # R3: Backend manager for workspace isolation and cleanup (#176, #240)
+        self.backend_manager = backend_manager
 
     def _get_heartbeat_settings(self, agent_type: str) -> tuple[float, int]:
         """Return (interval_sec, miss_threshold) for the given agent type."""
@@ -308,6 +312,10 @@ class DAGExecutionEngine:
         # M2.0: Start watchdog
         self._running_nodes = {}
         self._start_watchdog()
+
+        # R3: Auto-serialize parallel generators without ownership contracts (#272 EC4)
+        levels = self._auto_serialize_parallel_generators(dag, levels)
+
         replan_count = 0
         level_idx = 0
 
@@ -594,6 +602,55 @@ class DAGExecutionEngine:
                 if any(kw in lower for kw in test_keywords):
                     return True
         return False
+
+    def _auto_serialize_parallel_generators(
+        self,
+        dag: DAG,
+        levels: list[list[str]],
+    ) -> list[list[str]]:
+        """Auto-serialize parallel generators without ownership contracts (#272 EC4).
+
+        When parallel generators at the same level have no owned_files,
+        insert implicit HARD edges to serialize them, preventing write
+        conflicts. Returns recomputed levels if edges were added.
+        """
+        from core.models import DependencyType
+
+        edges_added = False
+        for level in levels:
+            generators = [
+                nid for nid in level
+                if dag.nodes[nid].agent_type == "generator"
+            ]
+            if len(generators) < 2:
+                continue
+
+            # Check if any generator lacks ownership contracts
+            no_contract = [nid for nid in generators if not dag.nodes[nid].owned_files]
+            if not no_contract:
+                continue  # All have contracts → safe to parallelize
+
+            # Auto-serialize: add implicit edges between generators
+            for i in range(1, len(generators)):
+                from_id = generators[i - 1]
+                to_id = generators[i]
+                # Check if edge already exists
+                existing = any(
+                    e.from_node == from_id and e.to_node == to_id
+                    for e in dag.edges
+                )
+                if not existing:
+                    dag.add_edge(from_id, to_id, dependency_type=DependencyType.HARD)
+                    edges_added = True
+                    logger.info(
+                        "Auto-serialized parallel generators: %s → %s "
+                        "(no ownership contracts declared)",
+                        from_id, to_id,
+                    )
+
+        if edges_added:
+            return dag.topological_levels()
+        return levels
 
     # Codes that are purely formatting/whitespace and safe to tolerate on retry.
     # E999 is intentionally excluded — it indicates SyntaxError, not formatting.
@@ -1045,6 +1102,24 @@ class DAGExecutionEngine:
             node.completed_at = datetime.now(timezone.utc)
             node.result = result
             node.output_artifacts = result.get("artifacts", [])
+
+            # R3: Cleanup leftover artifacts after node success (#240)
+            if self.backend_manager and node.owned_files and node.started_at:
+                try:
+                    cleaned = self.backend_manager.cleanup_node_artifacts(
+                        job_id="",
+                        run_id="",
+                        node_id=node_id,
+                        expected_artifacts=node.owned_files,
+                        started_at=node.started_at.timestamp(),
+                    )
+                    if cleaned:
+                        logger.info(
+                            "Cleaned up %d leftover files from node %s",
+                            len(cleaned), node_id,
+                        )
+                except Exception as e:
+                    logger.debug("Artifact cleanup failed for node %s: %s", node_id, e)
 
             await self._emit(ExecutionEvent(
                 node_id=node_id,
