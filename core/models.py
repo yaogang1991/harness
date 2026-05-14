@@ -255,10 +255,17 @@ class DAGNode(BaseModel):
             self.id = f"node_{uuid.uuid4().hex[:8]}"
 
 
+class DependencyType(str, Enum):
+    """Dependency semantics for DAG edges (#271)."""
+    HARD = "hard"  # upstream FAILED → downstream SKIP
+    SOFT = "soft"  # upstream FAILED → downstream continues with warning
+
+
 class DAGEdge(BaseModel):
     """A directed edge from one node to another."""
     from_node: str
     to_node: str
+    dependency_type: DependencyType = DependencyType.HARD
 
 
 class DAG(BaseModel):
@@ -273,12 +280,30 @@ class DAG(BaseModel):
     def add_node(self, node: DAGNode) -> None:
         self.nodes[node.id] = node
 
-    def add_edge(self, from_id: str, to_id: str) -> None:
-        self.edges.append(DAGEdge(from_node=from_id, to_node=to_id))
+    def add_edge(self, from_id: str, to_id: str,
+                 dependency_type: DependencyType = DependencyType.HARD) -> None:
+        self.edges.append(DAGEdge(
+            from_node=from_id, to_node=to_id,
+            dependency_type=dependency_type,
+        ))
 
     def get_dependencies(self, node_id: str) -> list[str]:
         """Get all predecessor nodes."""
         return [e.from_node for e in self.edges if e.to_node == node_id]
+
+    def get_hard_dependencies(self, node_id: str) -> list[str]:
+        """Get predecessor nodes connected by HARD edges only (#271)."""
+        return [
+            e.from_node for e in self.edges
+            if e.to_node == node_id and e.dependency_type == DependencyType.HARD
+        ]
+
+    def get_soft_dependencies(self, node_id: str) -> list[str]:
+        """Get predecessor nodes connected by SOFT edges only (#271)."""
+        return [
+            e.from_node for e in self.edges
+            if e.to_node == node_id and e.dependency_type == DependencyType.SOFT
+        ]
 
     def get_dependents(self, node_id: str) -> list[str]:
         """Get all successor nodes."""
@@ -319,14 +344,45 @@ class DAG(BaseModel):
 
         return levels
 
+    # Terminal states: the node has finished (success or failure).
+    _TERMINAL_STATES = frozenset({
+        NodeStatus.SUCCESS,
+        NodeStatus.PARTIAL_PASS,
+        NodeStatus.WARNED,
+        NodeStatus.FAILED,
+        NodeStatus.SKIPPED,
+    })
+
+    _TERMINAL_SUCCESS_STATES = frozenset({
+        NodeStatus.SUCCESS,
+        NodeStatus.PARTIAL_PASS,
+        NodeStatus.WARNED,
+    })
+
     def get_ready_nodes(self) -> list[str]:
-        """Get nodes whose dependencies are all satisfied."""
+        """Get nodes ready to execute.
+
+        Hard deps must be terminal success (SUCCESS/PARTIAL_PASS/WARNED).
+        Soft deps must be terminal (any finished state) so upstream isn't
+        still running when downstream starts (#271).
+        """
         ready = []
         for nid, node in self.nodes.items():
             if node.status != NodeStatus.PENDING:
                 continue
-            deps = self.get_dependencies(nid)
-            if all(self.nodes[d].status == NodeStatus.SUCCESS for d in deps):
+            hard_deps = self.get_hard_dependencies(nid)
+            hard_ok = all(
+                self.nodes[d].status in self._TERMINAL_SUCCESS_STATES
+                for d in hard_deps
+            )
+            if not hard_ok:
+                continue
+            soft_deps = self.get_soft_dependencies(nid)
+            soft_done = all(
+                self.nodes[d].status in self._TERMINAL_STATES
+                for d in soft_deps
+            )
+            if soft_done:
                 ready.append(nid)
         return ready
 

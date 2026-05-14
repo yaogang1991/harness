@@ -562,27 +562,40 @@ class DAGExecutionEngine:
         if node.status not in (NodeStatus.PENDING, NodeStatus.RETRYING):
             return
 
-        # Dependency-aware skip: only skip if a direct dependency failed (#259).
-        # Unlike _skip_remaining (which skips entire levels), this allows nodes
-        # whose dependencies all succeeded to continue executing.
-        deps = dag.get_dependencies(node_id)
-        failed_deps = [
-            d for d in deps
+        # Dependency-aware skip with hard/soft semantics (#271).
+        # HARD deps: upstream FAILED/SKIPPED → downstream SKIP.
+        # SOFT deps: upstream FAILED/SKIPPED → downstream continues with warning.
+        hard_deps = dag.get_hard_dependencies(node_id)
+        failed_hard = [
+            d for d in hard_deps
             if dag.nodes[d].status in (NodeStatus.FAILED, NodeStatus.SKIPPED)
         ]
-        if failed_deps:
+        if failed_hard:
             node.status = NodeStatus.SKIPPED
             node.error = (
-                f"Skipped: upstream dependencies {failed_deps} "
+                f"Skipped: hard dependencies {failed_hard} "
                 f"failed/were skipped"
             )
             logger.info(
-                "Node %s skipped due to failed dependencies: %s",
-                node_id, failed_deps,
+                "Node %s skipped due to failed hard dependencies: %s",
+                node_id, failed_hard,
             )
             return
 
-        input_artifacts = self._collect_input_artifacts(dag, node_id)
+        soft_deps = dag.get_soft_dependencies(node_id)
+        failed_soft = [
+            d for d in soft_deps
+            if dag.nodes[d].status in (NodeStatus.FAILED, NodeStatus.SKIPPED)
+        ]
+        if failed_soft:
+            logger.info(
+                "Node %s: soft dependencies %s failed, continuing anyway",
+                node_id, failed_soft,
+            )
+
+        input_artifacts = self._collect_input_artifacts(
+            dag, node_id, failed_soft=failed_soft,
+        )
 
         node.status = NodeStatus.RUNNING
         node.started_at = datetime.now(timezone.utc)
@@ -944,10 +957,15 @@ class DAGExecutionEngine:
             except asyncio.CancelledError:
                 pass
 
-    def _collect_input_artifacts(self, dag: DAG, node_id: str) -> list[HandoffArtifact]:
+    def _collect_input_artifacts(
+        self,
+        dag: DAG,
+        node_id: str,
+        failed_soft: list[str] | None = None,
+    ) -> list[HandoffArtifact]:
         """Collect output artifacts from all dependency nodes."""
         dependencies = dag.get_dependencies(node_id)
-        artifacts = []
+        artifacts: list[HandoffArtifact] = []
 
         for dep_id in dependencies:
             dep_node = dag.nodes[dep_id]
@@ -1039,6 +1057,38 @@ class DAGExecutionEngine:
                 to_agent=node.agent_type,
                 content=retry_hint,
                 metadata={"type": "eval_feedback", "attempt": node.retry_count},
+            ))
+
+        # Soft dependency warning: downstream gets structured info about
+        # failed/skipped soft deps so it can adapt its behavior (#271).
+        if failed_soft:
+            dep_summaries = []
+            for dep_id in failed_soft:
+                dep_node = dag.nodes[dep_id]
+                dep_summaries.append(
+                    f"- {dep_id} ({dep_node.agent_type}): "
+                    f"{dep_node.status.value}"
+                    f"{'; ' + dep_node.error[:200] if dep_node.error else ''}"
+                )
+            warning_content = (
+                "DEPENDENCY WARNING: The following soft (optional) "
+                "dependencies failed or were skipped:\n"
+                + "\n".join(dep_summaries)
+                + "\n\nYou may proceed, but outputs from these nodes "
+                "are NOT available."
+            )
+            artifacts.append(HandoffArtifact(
+                from_agent="dag_engine",
+                to_agent=dag.nodes[node_id].agent_type,
+                content=warning_content,
+                metadata={
+                    "type": "dependency_warning",
+                    "failed_soft_deps": failed_soft,
+                    "dep_statuses": {
+                        dep_id: dag.nodes[dep_id].status.value
+                        for dep_id in failed_soft
+                    },
+                },
             ))
 
         return artifacts
