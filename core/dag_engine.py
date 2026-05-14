@@ -690,7 +690,25 @@ class DAGExecutionEngine:
                         return
 
             if self.evaluator and node.success_criteria and node.agent_type == "generator":
-                eval_work_dir = self.work_dir or os.getcwd()
+                if not self.work_dir:
+                    logger.error(
+                        "Node %s: work_dir not set — cannot evaluate safely. "
+                        "Aborting evaluation to prevent incorrect results.",
+                        node_id,
+                    )
+                    node.status = NodeStatus.FAILED
+                    node.error = (
+                        "Evaluation skipped: work_dir not configured. "
+                        "Pass --project to set the working directory."
+                    )
+                    node.completed_at = datetime.now(timezone.utc)
+                    await self._emit(ExecutionEvent(
+                        node_id=node_id,
+                        event_type="failed",
+                        details={"reason": "no_work_dir"},
+                    ))
+                    return
+                eval_work_dir = self.work_dir
                 eval_result = await asyncio.get_running_loop().run_in_executor(
                     self._executor,
                     functools.partial(
