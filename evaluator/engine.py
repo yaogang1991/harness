@@ -537,45 +537,18 @@ class EvaluatorEngine:
         if not resolved:
             return True, "No targets to lint"
 
-        # Detect auto-fixable issues via dry-run (no in-place modification).
-        # This prevents parallel DAG nodes from corrupting each other's files.
+        # Auto-fix unused imports/variables via autoflake --in-place (#283).
+        # Previously used --check (dry-run only), which left F401 issues for
+        # the generator to fix on retry — but retries often reintroduce the
+        # same imports.  Fixing in-place before scoring eliminates this cycle.
         autofix_suggestions: list[str] = []
-        # Snapshot content before autoflake to detect changes (for tracking).
-        _pre_autoflake: dict[str, str] = {}
-        for fpath in resolved:
-            try:
-                _pre_autoflake[fpath] = Path(fpath).read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                pass
-        try:
-            result = subprocess.run(
-                [
-                    sys.executable, "-m", "autoflake",
-                    "--remove-all-unused-imports",
-                    "--remove-unused-variables",
-                    "--check",
-                ] + resolved,
-                capture_output=True, text=True, timeout=30,
+        autofixed_files = self._auto_fix_unused(resolved, work_dir)
+        self._last_autofixed = autofixed_files
+        if autofixed_files:
+            logger.info(
+                "autoflake removed unused imports from %d file(s): %s",
+                len(autofixed_files), autofixed_files,
             )
-            if result.returncode != 0 and result.stdout:
-                lines = result.stdout.strip().split("\n")[:5]
-                autofix_suggestions.extend(
-                    f"autoflake: {l}" for l in lines if l.strip()
-                )
-        except FileNotFoundError:
-            pass
-        except Exception:
-            pass
-
-        # Detect files changed by autoflake (populated when tests simulate
-        # in-place modification, or if --check is removed in the future).
-        for fpath, content_before in _pre_autoflake.items():
-            try:
-                content_after = Path(fpath).read_text(encoding="utf-8", errors="replace")
-                if content_after != content_before:
-                    self._last_autofixed.append(Path(fpath).name)
-            except OSError:
-                pass
 
         # Apply autopep8 in-place formatting to fix whitespace issues
         # (E203, E303, W291, W293, W605, E302) before flake8 runs.
@@ -733,6 +706,60 @@ class EvaluatorEngine:
             )
 
         return len(new_issues) == 0, msg
+
+    def _auto_fix_unused(self, resolved: list[str], work_dir: Path) -> list[str]:
+        """Remove unused imports and variables via autoflake --in-place (#283).
+
+        Runs before autopep8 and flake8 so that trivial F401/F841 issues are
+        eliminated before scoring.  This prevents the retry loop where the
+        generator regenerates files with the same unused imports.
+
+        Returns list of relative paths of files that were actually modified.
+        Silently skips if autoflake is not installed or times out.
+        """
+        if not resolved:
+            return []
+
+        before: dict[str, str] = {}
+        for fpath in resolved:
+            try:
+                before[fpath] = Path(fpath).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
+
+        try:
+            subprocess.run(
+                [
+                    sys.executable, "-m", "autoflake",
+                    "--in-place",
+                    "--remove-all-unused-imports",
+                    "--remove-unused-variables",
+                ] + resolved,
+                capture_output=True, text=True, timeout=30,
+            )
+        except FileNotFoundError:
+            logger.debug("autoflake not installed, skipping unused import fix")
+            return []
+        except subprocess.TimeoutExpired:
+            logger.warning("autoflake timed out, skipping unused import fix")
+            return []
+        except Exception as exc:
+            logger.warning("autoflake error: %s", exc)
+            return []
+
+        changed: list[str] = []
+        for fpath, content_before in before.items():
+            try:
+                content_after = Path(fpath).read_text(encoding="utf-8", errors="replace")
+                if content_after != content_before:
+                    try:
+                        rel = str(Path(fpath).relative_to(work_dir))
+                    except ValueError:
+                        rel = Path(fpath).name
+                    changed.append(rel)
+            except OSError:
+                pass
+        return changed
 
     def _auto_format_apply(self, resolved: list[str], work_dir: Path) -> list[str]:
         """Apply autopep8 in-place formatting to fix whitespace issues (#206).
