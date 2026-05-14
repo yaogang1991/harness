@@ -332,6 +332,11 @@ class DAGExecutionEngine:
                 level = levels[level_idx]
                 semaphore = asyncio.Semaphore(self.max_parallel)
 
+                logger.info(
+                    "Executing level %d/%d: %s",
+                    level_idx + 1, len(levels), level,
+                )
+
                 async def run_with_limit(
                     node_id: str, sem: asyncio.Semaphore, dag_ref: DAG,
                 ) -> None:
@@ -340,6 +345,15 @@ class DAGExecutionEngine:
 
                 tasks = [run_with_limit(nid, semaphore, dag) for nid in level]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Check for CancelledError (timeout/signal) — propagate (#304)
+                for r in results:
+                    if isinstance(r, asyncio.CancelledError):
+                        logger.error(
+                            "Node execution cancelled at level %d: %s",
+                            level_idx, r,
+                        )
+                        raise r
 
                 # Check for PendingApprovalError — must re-raise immediately.
                 for r in results:
@@ -475,6 +489,19 @@ class DAGExecutionEngine:
                     level_idx += 1
 
             return dag
+        except asyncio.CancelledError:
+            # External cancellation (timeout, signal) — log before cleanup (#304)
+            logger.error(
+                "DAG execution cancelled at level %d/%d",
+                level_idx + 1, len(levels),
+            )
+            raise
+        except Exception:
+            logger.exception(
+                "DAG execution failed at level %d/%d",
+                level_idx + 1, len(levels),
+            )
+            raise
         finally:
             # M2.0: Stop watchdog
             self._stop_watchdog()
@@ -630,6 +657,11 @@ class DAGExecutionEngine:
         node.started_at = datetime.now(timezone.utc)
         node.health_status = NodeHealth.HEALTHY
         node.record_heartbeat()  # M2.0: Initial heartbeat
+
+        logger.info(
+            "Node %s (%s) starting — attempt %d/%d",
+            node_id, node.agent_type, node.retry_count + 1, node.max_retries,
+        )
 
         # M2.0: Register with watchdog
         self._running_nodes[node_id] = node

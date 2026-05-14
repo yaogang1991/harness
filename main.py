@@ -666,10 +666,19 @@ async def cmd_execute(args, dag: DAG | None = None):
     print(f"Executing DAG with {len(dag.nodes)} nodes...")
     print(f"Levels: {dag.topological_levels()}")
     print()
+    sys.stdout.flush()
 
     # Execute
     try:
         result_dag = await engine.execute(dag)
+    except asyncio.CancelledError:
+        # Process was cancelled (timeout, signal, etc.) — log before exit (#304)
+        store.emit_event(session_id, EventType.SESSION_ERROR, {
+            "error": "Execution cancelled (timeout or external signal)",
+        })
+        print("Execution cancelled.", file=sys.stderr)
+        sys.stderr.flush()
+        return None
     except PendingApprovalError as exc:
         store.emit_event(session_id, EventType.SESSION_ERROR, {
             "error": f"Approval required: {exc.ticket_id}",
