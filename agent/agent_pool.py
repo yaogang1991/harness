@@ -323,8 +323,20 @@ If NO automated evaluation results are provided, perform full evaluation:
                 retry_instruction = (
                     "\n## IMPORTANT: This is a RETRY attempt.\n"
                     "Your previous attempt was evaluated and FAILED. "
-                    "You MUST analyze the feedback above and try a DIFFERENT approach.\n"
-                    "Do NOT repeat the same tool calls that failed before.\n"
+                    "You MUST analyze the feedback above and fix the issues.\n\n"
+                    "INCREMENTAL FIX RULES:\n"
+                    "1. Do NOT rewrite files from scratch — your previous code "
+                    "was mostly correct\n"
+                    "2. Use the EDIT tool to fix ONLY the specific failing "
+                    "tests/functions mentioned in the feedback\n"
+                    "3. If a test expects a different exception type, change "
+                    "ONLY that assertion\n"
+                    "4. If a test expects a different return value, change "
+                    "ONLY that assertion\n"
+                    "5. Do NOT modify tests that were PASSING — they don't "
+                    "need changes\n"
+                    "6. After editing, run ONLY the failing tests to verify: "
+                    "`python -m pytest path/to/test.py -v`\n"
                 )
                 break
 
