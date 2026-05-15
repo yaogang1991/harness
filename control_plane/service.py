@@ -973,9 +973,6 @@ class RunService:
             node_timeout_config=_cfg.node_timeout,
         )
 
-        # Inject node timeout config so _get_node_timeout uses NodeTimeoutConfig
-        # instead of fallback (interval * threshold) (#360).
-        engine._node_timeout_config = _cfg.node_timeout
         async def _session_event_handler(event):
             event_type_map = {
                 "started": EventType.WORKFLOW_STAGE_START,

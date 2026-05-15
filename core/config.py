@@ -464,7 +464,7 @@ class HarnessConfig(BaseModel):
     @classmethod
     def from_env(cls) -> HarnessConfig:
         """Create config from environment variables (with ~/.claude/settings-kimi.json fallback)."""
-        return cls(
+        instance = cls(
             llm=LLMConfig(
                 api_key=os.getenv(
                     "ANTHROPIC_API_KEY",
