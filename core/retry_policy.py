@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from pathlib import Path
+
 from typing import Any
 
 from core.models import CriterionType, DAGNode, SuccessCriterion
@@ -161,7 +161,7 @@ class RetryPolicyEngine:
             path = os.path.join(work_dir, art)
             try:
                 if os.path.isfile(path):
-                    with open(path, "r", encoding="utf-8") as f:
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:
                         snapshot[art] = f.read()
             except OSError:
                 pass
@@ -175,12 +175,9 @@ class RetryPolicyEngine:
         """Restore files from a previous snapshot."""
         for art, content in snapshot.items():
             path = os.path.join(work_dir, art)
-            try:
-                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(content)
-            except OSError:
-                pass
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
 
     # ------------------------------------------------------------------
     # Lint issue tolerance
