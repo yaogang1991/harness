@@ -286,7 +286,7 @@ class NodeTimeoutConfig(BaseModel):
     """
 
     default_timeout: int = Field(
-        default=int(os.getenv(
+        default_factory=lambda: int(os.getenv(
             "HARNESS_NODE_TIMEOUT",
             os.getenv("HARNESS_AGENT_TIMEOUT", "300"),
         )),
