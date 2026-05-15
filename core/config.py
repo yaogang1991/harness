@@ -416,12 +416,55 @@ class HarnessConfig(BaseModel):
     def from_yaml(cls, path: str | Path) -> HarnessConfig:
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-        return cls(**data)
+        instance = cls(**data)
+        instance.warn_on_timeout_issues()
+        return instance
+
+    def validate_timeout_inequality(self) -> list[str]:
+        """Validate the timeout ordering constraint (#360 PR4).
+
+        Returns a list of warning/error messages. Empty list means all OK.
+
+        Required: llm.timeout < node_timeout_min < run_timeout_sec
+        """
+        issues: list[str] = []
+        llm_timeout = self.llm.timeout
+        node_min = self.node_timeout.min_timeout
+        node_max = self.node_timeout.max_timeout
+        run_timeout = self.run_timeout_sec
+
+        # Use >= (not >) so that equal values also trigger a warning:
+        # if HTTP timeout == node timeout, a slow LLM call will consume
+        # the entire node budget without making progress.
+        if llm_timeout >= node_min:
+            issues.append(
+                f"HTTP timeout ({llm_timeout}s) >= min node timeout "
+                f"({node_min}s) — LLM calls may time out before node budget "
+                f"is used. Reduce HARNESS_LLM_TIMEOUT or increase "
+                f"HARNESS_NODE_TIMEOUT."
+            )
+        if node_max >= run_timeout:
+            issues.append(
+                f"Max node timeout ({node_max}s) >= run timeout "
+                f"({run_timeout}s) — nodes may exceed run budget. "
+                f"Increase HARNESS_RUN_TIMEOUT_SEC or reduce "
+                f"HARNESS_NODE_TIMEOUT_GENERATOR."
+            )
+        return issues
+
+    def warn_on_timeout_issues(self) -> None:
+        """Log warnings for timeout inequality violations (#360 PR4)."""
+        import logging
+        issues = self.validate_timeout_inequality()
+        for issue in issues:
+            logging.getLogger(__name__).warning(
+                "Timeout config issue: %s", issue,
+            )
 
     @classmethod
     def from_env(cls) -> HarnessConfig:
         """Create config from environment variables (with ~/.claude/settings-kimi.json fallback)."""
-        return cls(
+        instance = cls(
             llm=LLMConfig(
                 api_key=os.getenv(
                     "ANTHROPIC_API_KEY",
@@ -481,3 +524,5 @@ class HarnessConfig(BaseModel):
             ),
             watchdog=WatchdogConfig.from_env(),
         )
+        instance.warn_on_timeout_issues()
+        return instance
