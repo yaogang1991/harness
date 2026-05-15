@@ -37,6 +37,7 @@ from core.models import (
 from core.exceptions import PendingApprovalError
 from core.exceptions import RateLimitError  # NodeTimeoutError added in PR2
 from core.exceptions import NodeTimeoutError  # noqa: F401 — used in PR2
+from core.retry_policy import RetryPolicyEngine
 
 
 EventHandler = Callable[[ExecutionEvent], Coroutine[Any, Any, None]]
@@ -117,10 +118,15 @@ class DAGExecutionEngine:
             max_workers=max_parallel,
             thread_name_prefix="dag-engine",
         )
-        # Best-attempt tracking to prevent retry regression (#129).
-        self._best_attempts: dict[str, dict] = {}
+        # Best-attempt tracking delegated to RetryPolicyEngine (#177 PR4).
+        self._retry_policy = RetryPolicyEngine()
         # R3: Backend manager for workspace isolation and cleanup (#176, #240)
         self.backend_manager = backend_manager
+
+    @property
+    def _best_attempts(self) -> dict[str, dict]:
+        """Proxy to RetryPolicyEngine._best_attempts for backward compat."""
+        return self._retry_policy._best_attempts
 
     def _get_heartbeat_settings(self, agent_type: str) -> tuple[float, int]:
         """Return (interval_sec, miss_threshold) for the given agent type."""
@@ -544,78 +550,25 @@ class DAGExecutionEngine:
         work_dir: str, artifacts: list[str],
     ) -> dict[str, str]:
         """Capture file contents of artifacts for later rollback."""
-        snapshot: dict[str, str] = {}
-        for artifact in (artifacts or []):
-            path = os.path.join(work_dir, artifact)
-            try:
-                if os.path.isfile(path):
-                    with open(path, "r", encoding="utf-8", errors="replace") as f:
-                        snapshot[artifact] = f.read()
-            except OSError:
-                pass
-        return snapshot
+        return RetryPolicyEngine.capture_file_snapshot(work_dir, artifacts)
 
     @staticmethod
     def _restore_file_snapshot(
         work_dir: str, snapshot: dict[str, str],
     ) -> None:
         """Restore files from a previously captured snapshot."""
-        for artifact, content in snapshot.items():
-            path = os.path.join(work_dir, artifact)
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
+        return RetryPolicyEngine.restore_file_snapshot(work_dir, snapshot)
 
     def _compute_backoff(self, retry_count: int) -> float:
         """Compute exponential backoff delay in seconds."""
-        return min(self.backoff_base ** retry_count, self.backoff_cap)
+        return self._retry_policy.compute_backoff(
+            retry_count, base=self.backoff_base, cap=self.backoff_cap,
+        )
 
     @staticmethod
     def _requires_output_artifacts(node: DAGNode) -> bool:
-        """Check whether a node is expected to produce output file artifacts.
-
-        Returns True only when criteria explicitly depend on disk files
-        (FILE_EXISTS, FILE_CHANGED, FILE_PATTERN, TEST_FILE_EXISTS, TESTS_PASS).
-        Pure analysis/text generators with CUSTOM-only criteria are excluded —
-        they may legitimately produce zero file artifacts.
-
-        FILE_CHANGED-only nodes are also excluded (#377) — they modify existing
-        files rather than creating new ones, so zero output artifacts is normal.
-        """
-        # Only generator-type nodes (or any non-standard type with file criteria)
-        # are expected to produce file artifacts. Planner/evaluator are excluded.
-        is_producer = node.agent_type in ("generator", "worker") or node.agent_type not in ("planner", "evaluator")
-
-        file_criteria = {
-            CriterionType.FILE_EXISTS,
-            CriterionType.FILE_CHANGED,
-            CriterionType.FILE_PATTERN,
-            CriterionType.TEST_FILE_EXISTS,
-            CriterionType.TESTS_PASS,
-        }
-        # Track which file criteria types are present (#377)
-        found_file_types: set[CriterionType] = set()
-        # Keywords in legacy string criteria that imply file/test output
-        file_keywords = {"file", "coverage", "lint"}
-        test_keywords = {"tests pass", "test pass", "test file"}
-        has_legacy_file_criteria = False
-        for crit in node.success_criteria:
-            if isinstance(crit, SuccessCriterion) and crit.type in file_criteria:
-                found_file_types.add(crit.type)
-            elif isinstance(crit, str) and is_producer:
-                lower = crit.lower()
-                if any(kw in lower for kw in file_keywords):
-                    has_legacy_file_criteria = True
-                if any(kw in lower for kw in test_keywords):
-                    has_legacy_file_criteria = True
-
-        if not found_file_types and not has_legacy_file_criteria:
-            return False
-        # If only FILE_CHANGED criteria exist (no FILE_EXISTS, TESTS_PASS, etc.),
-        # the node modifies existing files — zero new artifacts is expected (#377).
-        if found_file_types == {CriterionType.FILE_CHANGED}:
-            return False
-        return True
+        """Check whether a node is expected to produce output file artifacts."""
+        return RetryPolicyEngine.requires_output_artifacts(node)
 
     def _auto_serialize_parallel_generators(
         self,
@@ -680,34 +633,13 @@ class DAGExecutionEngine:
         return levels
 
     # Codes that are purely formatting/whitespace and safe to tolerate on retry.
-    # E999 is intentionally excluded — it indicates SyntaxError, not formatting.
-    _RETRY_TOLERABLE_CODES: frozenset[str] = frozenset({
-        # Whitespace / formatting
-        "E501",  # line too long
-        "E303",  # too many blank lines
-        "W291",  # trailing whitespace
-        "W293",  # whitespace before ':'
-        "E203",  # whitespace before ':'
-        "E302",  # expected 2 blank lines
-        "E261",  # at least two spaces before inline comment
-        "E265",  # block comment should start with '# '
-        # Unused imports/variables — cosmetic, not functional
-        "F401",  # module imported but unused
-        "F841",  # local variable assigned but never used
-    })
+    # Delegated to RetryPolicyEngine (#177 PR4). Kept as alias for backward compat.
+    _RETRY_TOLERABLE_CODES = RetryPolicyEngine.RETRY_TOLERABLE_CODES
 
     @classmethod
     def _is_retry_tolerable_lint_issue(cls, issue: str) -> bool:
-        """Check if a lint issue is formatting-only and safe to tolerate.
-
-        Expects issues in 'path:line:CODE' format from evaluator metadata.
-        E999 (SyntaxError) is NOT tolerable — it blocks execution.
-        """
-        import re as _re
-        m = _re.search(r":([A-Z]\d{2,3})(?:\s|$)", issue)
-        if m:
-            return m.group(1) in cls._RETRY_TOLERABLE_CODES
-        return False
+        """Check if a lint issue is formatting-only and safe to tolerate."""
+        return RetryPolicyEngine.is_tolerable_lint_issue(issue)
 
     async def _execute_single_node(self, dag: DAG, node_id: str) -> None:
         """Execute a single DAG node with retry logic."""
@@ -916,148 +848,53 @@ class DAGExecutionEngine:
                 node.auto_eval_result = eval_result.model_dump()
 
                 if not eval_result.passed:
-                    # Track best attempt to detect retry regression (#129, #151).
-                    prev_best = self._best_attempts.get(node_id)
-                    current_issues = set(
-                        eval_result.metadata.get(
-                            "lint_new_issues",
-                            eval_result.metadata.get("lint_all_issues", []),
-                        )
+                    # Delegate retry regression tracking to RetryPolicyEngine (#177 PR4).
+                    is_regression, best = self._retry_policy.record_attempt(
+                        node_id=node_id,
+                        score=eval_result.score,
+                        feedback=eval_result.feedback,
+                        output_artifacts=node.output_artifacts,
+                        work_dir=eval_work_dir,
+                        eval_metadata=eval_result.metadata,
+                        criteria_results=getattr(
+                            eval_result, "criteria_results", {},
+                        ),
+                        passed=eval_result.passed,
                     )
-                    is_regression = False
-                    if prev_best is None:
-                        self._best_attempts[node_id] = {
-                            "score": eval_result.score,
-                            "artifacts": node.output_artifacts.copy(),
-                            "feedback": eval_result.feedback,
-                            "lint_issues": current_issues,
-                            "artifact_set": set(node.output_artifacts or []),
-                            "file_snapshot": self._capture_file_snapshot(
-                                eval_work_dir, node.output_artifacts,
-                            ),
-                            "criteria_results": getattr(
-                                eval_result, "criteria_results", {},
-                            ),
-                            "passed": eval_result.passed,
-                        }
-                    elif eval_result.score > prev_best["score"]:
-                        self._best_attempts[node_id] = {
-                            "score": eval_result.score,
-                            "artifacts": node.output_artifacts.copy(),
-                            "feedback": eval_result.feedback,
-                            "lint_issues": current_issues,
-                            "artifact_set": set(node.output_artifacts or []),
-                            "file_snapshot": self._capture_file_snapshot(
-                                eval_work_dir, node.output_artifacts,
-                            ),
-                            "criteria_results": getattr(
-                                eval_result, "criteria_results", {},
-                            ),
-                            "passed": eval_result.passed,
-                        }
-                    else:
-                        # Score not improved — check issue-level regression (#151)
-                        prev_issues: set[str] = prev_best.get(
-                            "lint_issues", set(),
+                    # Regression detected: restore best attempt files (#212).
+                    if is_regression and best and "file_snapshot" in best:
+                        logger.info(
+                            "Node %s: restoring best attempt artifacts "
+                            "(score %.1f > current %.1f)",
+                            node_id, best["score"], eval_result.score,
                         )
-                        new_in_current = current_issues - prev_issues
-                        fixed_from_prev = prev_issues - current_issues
-
-                        # Check if all current issues are lint-only (#154).
-                        # Lint-only failures should not block retry progress.
-                        all_issues_lint_only = (
-                            len(current_issues) > 0
-                            and all(
-                                self._is_retry_tolerable_lint_issue(iss)
-                                for iss in current_issues
-                            )
+                        self._retry_policy.restore_file_snapshot(
+                            eval_work_dir, best["file_snapshot"],
                         )
-
-                        if new_in_current and not fixed_from_prev:
-                            # Only new issues, nothing fixed
-                            if all_issues_lint_only:
-                                # Lint-only — allow retry, update best (#154)
-                                is_regression = False
-                                self._best_attempts[node_id] = {
-                                    "score": eval_result.score,
-                                    "artifacts": node.output_artifacts.copy(),
-                                    "feedback": eval_result.feedback,
-                                    "lint_issues": current_issues,
-                                    "artifact_set": set(node.output_artifacts or []),
-                                    "file_snapshot": self._capture_file_snapshot(
-                                        eval_work_dir, node.output_artifacts,
-                                    ),
-                                    "criteria_results": getattr(
-                                        eval_result, "criteria_results", {},
-                                    ),
-                                    "passed": eval_result.passed,
-                                }
-                            else:
-                                is_regression = True
-                        elif (
-                            len(new_in_current) > len(fixed_from_prev)
-                            and eval_result.score < prev_best["score"]
-                        ):
-                            # More new issues than fixed AND score dropped
-                            is_regression = True
-                        else:
-                            # Partial progress: some issues fixed, some new
-                            # introduced. Update best if more were fixed.
-                            self._best_attempts[node_id] = {
-                                "score": eval_result.score,
-                                "artifacts": node.output_artifacts.copy(),
-                                "feedback": eval_result.feedback,
-                                "lint_issues": current_issues,
-                                "artifact_set": set(node.output_artifacts or []),
-                                "file_snapshot": self._capture_file_snapshot(
-                                    eval_work_dir, node.output_artifacts,
-                                ),
-                                "criteria_results": getattr(
-                                    eval_result, "criteria_results", {},
-                                ),
-                                "passed": eval_result.passed,
-                            }
-                        logger.warning(
-                            "Node %s retry score %.1f <= best %.1f "
-                            "(new_issues=%d, fixed=%d, regression=%s)",
-                            node_id, eval_result.score, prev_best["score"],
-                            len(new_in_current), len(fixed_from_prev),
-                            is_regression,
+                        # Delete extra files added by the regression attempt
+                        # that were not present in the best artifact set.
+                        best_artifact_set = best.get(
+                            "artifact_set", set(best["file_snapshot"].keys()),
                         )
-                        # Regression detected: restore best attempt files (#212).
-                        if is_regression and "file_snapshot" in prev_best:
-                            logger.info(
-                                "Node %s: restoring best attempt artifacts "
-                                "(score %.1f > current %.1f)",
-                                node_id, prev_best["score"], eval_result.score,
-                            )
-                            self._restore_file_snapshot(
-                                eval_work_dir, prev_best["file_snapshot"],
-                            )
-                            # Delete extra files added by the regression attempt
-                            # that were not present in the best artifact set.
-                            best_artifact_set = prev_best.get(
-                                "artifact_set", set(prev_best["file_snapshot"].keys()),
-                            )
-                            for artifact in (node.output_artifacts or []):
-                                if artifact not in best_artifact_set:
-                                    path = os.path.join(eval_work_dir, artifact)
-                                    try:
-                                        if os.path.isfile(path):
-                                            os.remove(path)
-                                            logger.info(
-                                                "Node %s: removed extra file %s "
-                                                "not in best attempt",
-                                                node_id, artifact,
-                                            )
-                                    except OSError:
-                                        pass
-                            node.output_artifacts = prev_best["artifacts"]
+                        for artifact in (node.output_artifacts or []):
+                            if artifact not in best_artifact_set:
+                                path = os.path.join(eval_work_dir, artifact)
+                                try:
+                                    if os.path.isfile(path):
+                                        os.remove(path)
+                                        logger.info(
+                                            "Node %s: removed extra file %s "
+                                            "not in best attempt",
+                                            node_id, artifact,
+                                        )
+                                except OSError:
+                                    pass
+                        node.output_artifacts = best["artifacts"]
                     node.retry_count += 1
                     # Build retry feedback with regression awareness.
-                    best = self._best_attempts[node_id]
+                    best = self._retry_policy.get_best(node_id)
                     regression_hint = ""
-                    if is_regression or eval_result.score < best["score"]:
+                    if is_regression or (best and eval_result.score < best["score"]):
                         regression_hint = (
                             "\n\nWARNING: Your previous attempt scored higher "
                             f"({best['score']:.1f} vs current {eval_result.score:.1f}). "
@@ -1065,8 +902,13 @@ class DAGExecutionEngine:
                             "specific issues reported, do NOT rewrite working code."
                         )
                     # Add targeted lint fix guidance (#151)
-                    prev_issues = best.get("lint_issues", set())
-                    curr_issues = current_issues
+                    prev_issues = best.get("lint_issues", set()) if best else set()
+                    curr_issues = set(
+                        eval_result.metadata.get(
+                            "lint_new_issues",
+                            eval_result.metadata.get("lint_all_issues", []),
+                        )
+                    )
                     new_only = curr_issues - prev_issues
                     if new_only and not regression_hint:
                         lint_guidance = (
