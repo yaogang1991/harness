@@ -50,6 +50,15 @@ class FileExistsChecker:
             candidates.extend(output_artifacts)
 
         if not candidates:
+            # Generator with FILE_EXISTS criteria but zero output (#372).
+            if not output_artifacts:
+                return CheckResult(
+                    passed=False,
+                    message=(
+                        "FILE_EXISTS criteria but no output files produced. "
+                        "The generator did not create any files."
+                    ),
+                )
             return CheckResult(passed=True, message="No specific files listed")
 
         eval_root = Path(work_dir)
