@@ -1113,8 +1113,9 @@ class DAGExecutionEngine:
         if self._node_timeout_config is not None:
             return self._node_timeout_config.timeout_for(agent_type)
         # Fallback: derive from watchdog settings (backward compat)
+        # Floor of 1s prevents timeout=0 when interval*threshold rounds down.
         interval, threshold = self._get_heartbeat_settings(agent_type)
-        return int(interval * threshold)
+        return max(1, int(interval * threshold))
 
     def _collect_input_artifacts(
         self,
