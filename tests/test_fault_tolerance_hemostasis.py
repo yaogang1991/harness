@@ -93,7 +93,7 @@ class TestRateLimitRetryBudget:
 
         call_count = 0
 
-        async def mock_executor(n, artifacts):
+        async def mock_executor(n, artifacts, **kwargs):
             nonlocal call_count
             call_count += 1
             raise RateLimitError("anthropic", "claude-sonnet-4-6", 3)
@@ -123,7 +123,7 @@ class TestRateLimitRetryBudget:
 
         call_count = 0
 
-        async def mock_executor(n, artifacts):
+        async def mock_executor(n, artifacts, **kwargs):
             nonlocal call_count
             call_count += 1
             raise RuntimeError("something broke")
@@ -200,3 +200,121 @@ class TestClassifyError:
     def test_classify_unknown(self):
         from control_plane.service import _classify_error
         assert _classify_error("Something unexpected happened") == "unknown"
+
+
+# -- 6. PR2: Node timeout managed by dag_engine + cooperative cancel ---------
+
+class TestNodeTimeoutInDagEngine:
+    @pytest.mark.asyncio
+    async def test_node_timeout_from_dag_engine(self):
+        """Timeout is enforced by dag_engine, not agent_pool (#360 PR2)."""
+        from core.dag_engine import DAGExecutionEngine
+
+        node = _make_node("slow_node", max_retries=1)
+        dag = _make_dag({"slow_node": node})
+
+        async def slow_executor(n, artifacts, **kwargs):
+            import asyncio
+            await asyncio.sleep(10)  # Will exceed short timeout
+            return {"status": "completed", "artifacts": []}
+
+        async def mock_failure_handler(d, nid, err):
+            from core.models import FailureDecision
+            return FailureDecision(action="abort", reasoning="timeout")
+
+        engine = DAGExecutionEngine(
+            agent_executor=slow_executor,
+            failure_handler=mock_failure_handler,
+            enable_watchdog=False,
+        )
+        # Override timeout to 1s for fast test
+        engine._get_node_timeout = lambda agent_type: 1
+        await engine.execute(dag)
+
+        assert node.status == NodeStatus.FAILED
+
+
+class TestCooperativeCancellation:
+    def test_cancel_event_stops_worker(self):
+        """threading.Event causes worker loop to exit at iteration boundary."""
+        import threading
+
+        from core.config import LLMConfig
+        from core.llm_client import LLMClient
+        from session.store import SessionStore
+        from agent.worker import AgentWorker
+
+        cancel = threading.Event()
+        call_count = 0
+
+        config = LLMConfig(api_key="test-key")
+        store = SessionStore("./data/events")
+        worker = AgentWorker(config, store)
+
+        # Mock LLM to return a tool call every time
+        def mock_call(messages, tools):
+            nonlocal call_count
+            call_count += 1
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": f"tc_{call_count}",
+                    "name": "bash",
+                    "arguments": {"command": "echo hi"},
+                }],
+            }
+
+        # Mock tool executor
+        from core.models import ToolResult
+
+        class FakeExecutor:
+            def execute(self, name, args):
+                # Set cancel after 2 tool executions
+                if call_count >= 2:
+                    cancel.set()
+                return ToolResult(tool_call_id="", success=True, output="ok")
+
+        worker.llm.call = mock_call
+
+        messages = list(worker.run(
+            session_id="test",
+            system_prompt="test",
+            user_message="test",
+            tools=[],
+            tool_executor=FakeExecutor(),
+            max_iterations=50,
+            cancel_event=cancel,
+        ))
+
+        # Should have stopped before 50 iterations
+        assert call_count <= 5, f"Expected early exit but ran {call_count} iterations"
+
+
+class TestNodeTimeoutConfig:
+    def test_default_timeout(self):
+        from core.config import NodeTimeoutConfig
+        cfg = NodeTimeoutConfig()
+        assert cfg.default_timeout == 300
+        assert cfg.timeout_for("planner") == 300
+
+    def test_generator_override(self):
+        from core.config import NodeTimeoutConfig
+        cfg = NodeTimeoutConfig()
+        assert cfg.timeout_for("generator") == 600
+
+    def test_env_var_override(self):
+        from core.config import NodeTimeoutConfig
+        import os
+        os.environ["HARNESS_NODE_TIMEOUT"] = "500"
+        try:
+            cfg = NodeTimeoutConfig()
+            assert cfg.default_timeout == 500
+        finally:
+            del os.environ["HARNESS_NODE_TIMEOUT"]
+
+    def test_min_max(self):
+        from core.config import NodeTimeoutConfig
+        cfg = NodeTimeoutConfig(default_timeout=300, overrides={"generator": 600, "evaluator": 120})
+        assert cfg.min_timeout == 120
+        assert cfg.max_timeout == 600
