@@ -10,6 +10,11 @@ Includes built-in retry with exponential backoff for transient errors
 
 For parallel DAG nodes sharing one process, a global semaphore limits
 concurrent API calls to prevent rate-limiting (#300).
+
+Hard per-call timeout (#401): wraps each SDK call in a thread with a
+wall-clock deadline. This catches cases where the SDK's own HTTP timeout
+fails to fire (e.g., silently dropped TCP connections where the socket
+read blocks indefinitely).
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ import time
 from datetime import datetime, timezone
 
 import anthropic
+import httpx
 from openai import OpenAI
 
 from core.config import LLMConfig
@@ -73,6 +79,11 @@ class LLMClient:
         self.config = config
         self.max_retries = max_retries
         self._client = self._create_client()
+        # Hard per-call wall-clock timeout (#401).  If the SDK's own httpx
+        # read timeout fails to fire (silently dropped TCP connection), this
+        # acts as a safety net so the call always returns within a bounded
+        # time.  Set to 2× the configured timeout + 30s buffer.
+        self._hard_timeout = config.timeout * 2 + 30
 
     @staticmethod
     def _parse_tool_arguments(raw: str | None) -> dict:
@@ -91,16 +102,16 @@ class LLMClient:
             return {}
 
     def _create_client(self):
-        # Use httpx.Timeout for fine-grained control over connect vs read
-        # timeouts.  Some third-party APIs (e.g., Kimi) accept the connection
-        # but hang indefinitely on large prompts.  A plain int timeout only
-        # covers the connect phase in some SDK versions (#367).
-        import httpx
+        # Explicit httpx.Timeout with separate connect/read/write/pool
+        # (#401, #367). A plain int timeout can fail to fire when a TCP
+        # connection is silently dropped — the socket read blocks indefinitely
+        # because no timeout applies at the socket level.  Setting connect and
+        # read separately ensures each phase has its own deadline.
         timeout = httpx.Timeout(
-            connect=10.0,          # connection timeout — fast fail if unreachable
-            read=self.config.timeout,  # read timeout — covers full response wait
-            write=30.0,            # write timeout — for sending large prompts
-            pool=10.0,             # pool timeout — waiting for a connection slot
+            connect=30.0,
+            read=float(self.config.timeout),
+            write=30.0,
+            pool=30.0,
         )
         if self.config.provider == "anthropic":
             return anthropic.Anthropic(
@@ -178,13 +189,15 @@ class LLMClient:
     def _call_once(
         self, messages: list[dict], tools: list[dict] | None = None
     ) -> dict:
-        """Single LLM call — no retry. Acquires global semaphore if configured (#300).
+        """Single LLM call with hard wall-clock timeout (#401, #367).
 
-        Wraps the actual call in a hard timeout to prevent indefinite hangs
-        when the SDK timeout doesn't fire (e.g., third-party API bugs #367).
+        Wraps the actual call in a separate thread with a deadline.  If the
+        SDK's own httpx timeout fails to fire (silently dropped TCP), the
+        hard timeout ensures we don't block indefinitely.  The stuck thread
+        becomes a daemon that cleans up when the process exits.
 
         Semaphore is acquired in the main thread so the permit is released
-        immediately on hard timeout, preventing permit leak and deadlock (#367 review).
+        immediately on hard timeout, preventing permit leak and deadlock (#367).
         """
         result: dict | None = None
         exc: Exception | None = None
@@ -201,14 +214,21 @@ class LLMClient:
             logger.debug("Acquiring API semaphore (limit=%d)", self.config.max_concurrent_api)
             sem.acquire()
         try:
-            hard_timeout = self.config.timeout + 30
             thread = threading.Thread(target=_target, daemon=True)
             thread.start()
-            thread.join(timeout=hard_timeout)
+            thread.join(timeout=self._hard_timeout)
             if thread.is_alive():
+                logger.error(
+                    "LLM call exceeded hard timeout (%ds). "
+                    "SDK timeout (%ds) did not fire — possible hung connection (#401). "
+                    "provider=%s model=%s",
+                    self._hard_timeout, self.config.timeout,
+                    self.config.provider, self.config.model,
+                )
                 raise TimeoutError(
-                    f"LLM call exceeded hard timeout of {hard_timeout}s — "
-                    f"the API may be unresponsive. Model: {self.config.model}"
+                    f"LLM call exceeded hard timeout of {self._hard_timeout}s "
+                    f"(SDK timeout: {self.config.timeout}s). "
+                    f"Provider: {self.config.provider}, Model: {self.config.model}"
                 )
         finally:
             if sem is not None:
