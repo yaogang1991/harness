@@ -97,6 +97,11 @@ class PlanValidator:
     # files, which causes LLM context exhaustion and partial output.
     MAX_FILES_PER_NODE = 15
 
+    # Maximum distinct complex features per generator node (#409).
+    # Prevents a single node from being tasked with too many algorithmic
+    # features, which causes iteration budget exhaustion and zero output.
+    MAX_FEATURES_PER_NODE = 3
+
     def __init__(self, auto_fix: bool = False) -> None:
         # auto_fix is accepted for API compat but validation-only is always used
         self.auto_fix = auto_fix
@@ -178,6 +183,8 @@ class PlanValidator:
 
         # Per-node file count estimation (#284)
         self._check_node_file_count(nodes)
+        # Feature complexity estimation (#409)
+        self._check_feature_complexity(nodes)
         # Parallel write conflict detection (#272)
         self._check_parallel_write_conflicts(nodes, edges)
 
@@ -290,6 +297,74 @@ class PlanValidator:
                     f"Decompose into multiple parallel generator nodes with a "
                     f"shared foundation node to prevent context exhaustion."
                 )
+
+    def _check_feature_complexity(self, nodes: list[dict]) -> None:
+        """Warn if a generator node has too many distinct complex features (#409).
+
+        Estimates feature count by counting enumerated items (1. 2. 3.),
+        comma-separated "implement X, Y, Z" patterns, and "and"-separated
+        feature lists in task descriptions.
+
+        Only warns for generator nodes — planner and evaluator nodes are excluded
+        because they produce in-memory output, not files.
+        """
+        for node in nodes:
+            if node.get("agent_type") != "generator":
+                continue
+            task = node.get("task", "")
+            if not task:
+                continue
+            feature_count = self._estimate_feature_count(task)
+            if feature_count > self.MAX_FEATURES_PER_NODE:
+                self.warnings.append(
+                    f"Node '{node.get('id')}' has ~{feature_count} distinct "
+                    f"complex features (limit: {self.MAX_FEATURES_PER_NODE}). "
+                    f"Split into multiple generator nodes with a shared "
+                    f"foundation node to prevent iteration budget exhaustion (#409)."
+                )
+
+    @staticmethod
+    def _estimate_feature_count(task: str) -> int:
+        """Estimate the number of distinct complex features in a task description.
+
+        Detects three patterns:
+        1. Enumerated lists: "1) apply_patch, 2) create_patch, ..."
+        2. Comma/and-separated: "implement apply_patch, create_patch, and merge"
+        3. Verb + noun patterns: "implement X", "build Y", "create Z"
+        """
+        import re
+        count = 0
+
+        # Pattern 1: Enumerated items "1) X", "2) Y", etc.
+        enumerated = re.findall(r'\d+[.)]\s+', task)
+        if len(enumerated) >= 3:
+            count = max(count, len(enumerated))
+
+        # Pattern 2: Comma-separated features with "implement"/"build"/"create"
+        # Look for lists of distinct feature nouns after implementation verbs
+        feature_list_match = re.findall(
+            r'(?:implement|build|create|develop|add)\s+(.+?)(?:\.|$)',
+            task, re.IGNORECASE,
+        )
+        for feature_text in feature_list_match:
+            # Split by commas and "and"
+            items = re.split(r',\s*(?:and\s+)?|\s+and\s+', feature_text)
+            items = [item.strip() for item in items if item.strip()]
+            if len(items) >= 3:
+                count = max(count, len(items))
+
+        # Pattern 3: Multiple "implement/build/create + noun" verb phrases
+        verb_phrases = re.findall(
+            r'(?:implement|build|create|develop|add|support)\s+'
+            r'(?:a\s+|an\s+|the\s+)?'
+            r'(\w[\w\s]{2,30}?)'
+            r'(?:\s*,|\s+and|\s*\.|$)',
+            task, re.IGNORECASE,
+        )
+        if len(verb_phrases) >= 3:
+            count = max(count, len(verb_phrases))
+
+        return count
 
     def _check_parallel_write_conflicts(
         self,
