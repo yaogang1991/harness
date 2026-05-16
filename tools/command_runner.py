@@ -87,7 +87,16 @@ class SyncSandboxAdapter:
         timeout: int,
         env: dict[str, str] | None,
     ) -> ToolCommandResult:
-        coro = self._sandbox.run_command(command, cwd, timeout, env)
+        try:
+            coro = self._sandbox.run_command(command, cwd, timeout, env)
+        except (NotImplementedError, Exception) as e:
+            prefix = "" if isinstance(e, NotImplementedError) else "Sandbox error: "
+            return ToolCommandResult(
+                returncode=-1,
+                stderr=f"{prefix}{e}",
+                timed_out=False,
+            )
+
         # Handle non-coroutine returns (e.g., mocks in tests)
         if not asyncio.iscoroutine(coro):
             result = coro
@@ -97,14 +106,22 @@ class SyncSandboxAdapter:
             except RuntimeError:
                 loop = None
 
-            if loop is not None and loop.is_running():
-                new_loop = asyncio.new_event_loop()
-                try:
-                    result = new_loop.run_until_complete(coro)
-                finally:
-                    new_loop.close()
-            else:
-                result = asyncio.run(coro)
+            try:
+                if loop is not None and loop.is_running():
+                    new_loop = asyncio.new_event_loop()
+                    try:
+                        result = new_loop.run_until_complete(coro)
+                    finally:
+                        new_loop.close()
+                else:
+                    result = asyncio.run(coro)
+            except (NotImplementedError, Exception) as e:
+                prefix = "" if isinstance(e, NotImplementedError) else "Sandbox error: "
+                return ToolCommandResult(
+                    returncode=-1,
+                    stderr=f"{prefix}{e}",
+                    timed_out=False,
+                )
 
         return ToolCommandResult(
             returncode=result.exit_code if not result.success else 0,

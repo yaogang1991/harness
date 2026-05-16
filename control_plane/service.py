@@ -305,7 +305,7 @@ class RunService:
 
             # --- Core execution (with task-level timeout) ---
             result_dag = await asyncio.wait_for(
-                self._execute_plan_and_run(job, session_id, store, work_dir, run.id),
+                self._execute_plan_and_run(job, session_id, store, work_dir, run.id, backend_manager),
                 timeout=timeout,
             )
 
@@ -739,6 +739,7 @@ class RunService:
         store: SessionStore,
         work_dir: Path,
         run_id: str | None = None,
+        backend_manager: Any | None = None,
     ) -> Any:
         """Plan a DAG and execute it. Subsystems run via hooks."""
         from control_plane.hooks import ExecutionContext
@@ -894,7 +895,17 @@ class RunService:
     ) -> DAGExecutionEngine:
         """Build a DAGExecutionEngine with agent pool, failure handler, and optional replan handler."""
         registry = AgentRegistry()
-        tool_registry = ToolRegistry(base_cwd=str(work_dir) if work_dir is not None else None)
+
+        # Wire sandbox through SyncSandboxAdapter if backend_manager is available (#179 PR3)
+        sandbox_runner = None
+        if backend_manager is not None and getattr(backend_manager, "sandbox", None) is not None:
+            from tools.command_runner import SyncSandboxAdapter
+            sandbox_runner = SyncSandboxAdapter(backend_manager.sandbox)
+
+        tool_registry = ToolRegistry(
+            base_cwd=str(work_dir) if work_dir is not None else None,
+            sandbox_runner=sandbox_runner,
+        )
 
         # Default guardrails: non-interactive → DONT_ASK + built-in tool whitelist
         if getattr(self, "policy", None) is not None:

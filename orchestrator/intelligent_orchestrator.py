@@ -339,6 +339,26 @@ class IntelligentOrchestrator:
                 reasoning=f"Infrastructure error (not retryable): {node_error[:200]}",
             )
 
+        # Zero-output + complex task → auto-replan without wasting LLM call (#409).
+        # When a generator node produces zero artifacts because the task has too many
+        # distinct features, retrying the same node is futile. Replan immediately.
+        is_zero_output = "zero output" in node_error.lower()
+        if is_zero_output and failed_node.agent_type == "generator":
+            feature_count = self._count_features(failed_node.task_description)
+            if feature_count > 3:
+                logger.info(
+                    "Node %s: zero output with %d features, auto-replanning",
+                    failed_node_id, feature_count,
+                )
+                return FailureDecision(
+                    action="replan",
+                    reasoning=(
+                        f"Node produced zero output artifacts with {feature_count} "
+                        f"distinct features. Task is too complex for a single node. "
+                        f"Split into 2-3 smaller nodes with shared foundation."
+                    ),
+                )
+
         # Build DAG status summary
         dag_status = []
         for nid, node in dag.nodes.items():
@@ -393,6 +413,15 @@ class IntelligentOrchestrator:
                     reasoning="Parse error; all downstream deps are soft, skipping failed node",
                 )
             return FailureDecision(action="abort", reasoning="Parse error, max retries reached")
+
+    @staticmethod
+    def _count_features(task_description: str) -> int:
+        """Count distinct complex features in a task description (#409).
+
+        Uses the same heuristic as PlanValidator._estimate_feature_count
+        to detect enumerated lists and feature patterns.
+        """
+        return PlanValidator._estimate_feature_count(task_description)
 
     def _plan_to_dag(self, plan: OrchestratorPlan) -> DAG:
         """Convert an OrchestratorPlan to an executable DAG."""

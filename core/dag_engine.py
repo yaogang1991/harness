@@ -37,7 +37,9 @@ from core.models import (
 from core.exceptions import PendingApprovalError
 from core.exceptions import RateLimitError  # NodeTimeoutError added in PR2
 from core.exceptions import NodeTimeoutError  # noqa: F401 — used in PR2
+from core.quality_gate import QualityGate
 from core.retry_policy import RetryPolicyEngine
+from core.watchdog import WatchdogService
 
 
 EventHandler = Callable[[ExecutionEvent], Coroutine[Any, Any, None]]
@@ -101,14 +103,15 @@ class DAGExecutionEngine:
         self.backoff_base = backoff_base
         self.backoff_cap = backoff_cap
         self.event_handlers: list[EventHandler] = []
-        # M2.0: Watchdog configuration
-        self.heartbeat_interval_sec = heartbeat_interval_sec
-        self.heartbeat_miss_threshold = heartbeat_miss_threshold
-        self.enable_watchdog = enable_watchdog
-        self._watchdog_overrides = watchdog_overrides or {}
-        self._alert_thresholds = alert_thresholds or {}
-        self._watchdog_task: asyncio.Task | None = None
-        self._running_nodes: dict[str, DAGNode] = {}
+        # M2.0: Watchdog delegated to WatchdogService (#177 PR4).
+        self._watchdog = WatchdogService(
+            heartbeat_interval_sec=heartbeat_interval_sec,
+            heartbeat_miss_threshold=heartbeat_miss_threshold,
+            enabled=enable_watchdog,
+            watchdog_overrides=watchdog_overrides or {},
+            alert_thresholds=alert_thresholds or {},
+            emit_func=self._emit,
+        )
         self._running_tasks: dict[str, asyncio.Task] = {}
         # M3.2: Memory integration
         self.memory_manager = memory_manager
@@ -123,11 +126,31 @@ class DAGExecutionEngine:
         )
         # Best-attempt tracking delegated to RetryPolicyEngine (#177 PR4).
         self._retry_policy = RetryPolicyEngine()
+        # Quality gate delegated to QualityGate service (#177 PR4).
+        self._quality_gate = QualityGate(retry_policy=self._retry_policy)
         # R3: Backend manager for workspace isolation and cleanup (#176, #240)
         self.backend_manager = backend_manager
         # Job/run identifiers for per-node workspace isolation (#176 PR2)
         self._job_id = job_id
         self._run_id = run_id
+
+    # -- Backward-compat proxies for extracted services (#177 PR4) ------------
+
+    @property
+    def heartbeat_interval_sec(self) -> float:
+        return self._watchdog._interval_sec
+
+    @property
+    def heartbeat_miss_threshold(self) -> int:
+        return self._watchdog._miss_threshold
+
+    @property
+    def enable_watchdog(self) -> bool:
+        return self._watchdog._enabled
+
+    @property
+    def _running_nodes(self) -> dict[str, DAGNode]:
+        return self._watchdog._running_nodes
 
     @property
     def _best_attempts(self) -> dict[str, dict]:
@@ -135,16 +158,12 @@ class DAGExecutionEngine:
         return self._retry_policy._best_attempts
 
     def _get_heartbeat_settings(self, agent_type: str) -> tuple[float, int]:
-        """Return (interval_sec, miss_threshold) for the given agent type."""
-        if agent_type in self._watchdog_overrides:
-            return self._watchdog_overrides[agent_type]
-        return self.heartbeat_interval_sec, self.heartbeat_miss_threshold
+        """Proxy to WatchdogService for backward compat."""
+        return self._watchdog.get_heartbeat_settings(agent_type)
 
     def _get_alert_threshold(self, agent_type: str) -> int:
-        """Minimum missed_count to emit heartbeat_missed event."""
-        if agent_type in self._alert_thresholds:
-            return self._alert_thresholds[agent_type]
-        return 2
+        """Proxy to WatchdogService for backward compat."""
+        return self._watchdog.get_alert_threshold(agent_type)
 
     def on_event(self, handler: EventHandler) -> None:
         """Register an event handler for execution monitoring."""
@@ -163,38 +182,27 @@ class DAGExecutionEngine:
 
     @staticmethod
     def _eval_status_to_node_status(eval_status: EvalStatus) -> NodeStatus:
-        """Map EvalStatus from evaluator to NodeStatus for DAG nodes (#270)."""
-        mapping = {
-            EvalStatus.CLEAN_PASS: NodeStatus.SUCCESS,
-            EvalStatus.PARTIAL_PASS: NodeStatus.PARTIAL_PASS,
-            EvalStatus.WARNED: NodeStatus.WARNED,
-            EvalStatus.FAILED: NodeStatus.FAILED,
-        }
-        return mapping.get(eval_status, NodeStatus.SUCCESS)
+        """Map EvalStatus from evaluator to NodeStatus for DAG nodes (#270).
+
+        Delegated to QualityGate (#177 PR4).
+        """
+        return QualityGate.eval_status_to_node_status(eval_status)
 
     @staticmethod
     def _is_terminal_success(status: NodeStatus) -> bool:
         """Check if a node status represents a successful terminal state (#270).
 
-        SUCCESS, PARTIAL_PASS, and WARNED all allow downstream to continue.
+        Delegated to QualityGate (#177 PR4).
         """
-        return status in (
-            NodeStatus.SUCCESS,
-            NodeStatus.PARTIAL_PASS,
-            NodeStatus.WARNED,
-        )
+        return QualityGate.is_terminal_success(status)
 
     @staticmethod
     def _is_test_file_exists_criterion(criterion: str | object) -> bool:
-        """Check if a criterion requires test files to exist (#247)."""
-        # Handle structured SuccessCriterion
-        if hasattr(criterion, "type"):
-            return getattr(criterion.type, "value", "") == "test_file_exists"
-        # Handle string criteria
-        if isinstance(criterion, str):
-            lower = criterion.lower()
-            return "test_file_exist" in lower or "test file exist" in lower
-        return False
+        """Check if a criterion requires test files to exist (#247).
+
+        Delegated to QualityGate (#177 PR4).
+        """
+        return QualityGate.is_test_file_exists_criterion(criterion)
 
     def _skip_remaining(self, dag: DAG, levels: list[list[str]], from_level: int) -> None:
         """Mark all pending nodes from from_level onward as SKIPPED."""
@@ -226,90 +234,16 @@ class DAGExecutionEngine:
     # ------------------------------------------------------------------
 
     async def _watchdog_loop(self) -> None:
-        """
-        Watchdog coroutine: pure early-warning event source (#360 PR3).
-
-        Monitors running nodes' heartbeats and emits events for
-        observability. Does NOT kill nodes — node timeout is managed
-        exclusively by _execute_with_timeout.
-
-        Per-agent-type overrides are respected: generator nodes, for
-        example, are allowed longer intervals than planner/evaluator.
-
-        Alert events use a configurable threshold (default 50% of unhealthy
-        threshold) to reduce noise from slow-but-healthy LLM APIs (#146).
-
-        This runs as a background task during execute().
-        """
-        check_interval = self.heartbeat_interval_sec * 1.5
-        while True:
-            try:
-                await asyncio.sleep(check_interval)
-            except asyncio.CancelledError:
-                return
-
-            for node_id, node in list(self._running_nodes.items()):
-                if node.status != NodeStatus.RUNNING:
-                    continue
-
-                interval, threshold = self._get_heartbeat_settings(
-                    node.agent_type,
-                )
-                health = node.check_health(interval, threshold)
-                alert_min = self._get_alert_threshold(node.agent_type)
-
-                if health == NodeHealth.MISSED:
-                    if node.missed_heartbeats >= alert_min:
-                        await self._emit(ExecutionEvent(
-                            node_id=node_id,
-                            event_type="heartbeat_missed",
-                            details={
-                                "missed_count": node.missed_heartbeats,
-                                "threshold": threshold,
-                                "agent_type": node.agent_type,
-                                "last_heartbeat": (
-                                    node.last_heartbeat_at.isoformat()
-                                    if node.last_heartbeat_at else None
-                                ),
-                            },
-                        ))
-                    else:
-                        logger.debug(
-                            "Node %s heartbeat missed (count=%d, threshold=%d)"
-                            " — below alert_min=%d, not emitting event",
-                            node_id, node.missed_heartbeats,
-                            threshold, alert_min,
-                        )
-
-                elif health == NodeHealth.UNHEALTHY:
-                    await self._emit(ExecutionEvent(
-                        node_id=node_id,
-                        event_type="unhealthy_warning",
-                        details={
-                            "missed_count": node.missed_heartbeats,
-                            "threshold": threshold,
-                            "agent_type": node.agent_type,
-                            "message": (
-                                f"Node {node_id} unhealthy: "
-                                f"{node.missed_heartbeats} heartbeats missed "
-                                f"(threshold: {threshold}, agent_type: "
-                                f"{node.agent_type}). "
-                                f"Node timeout is managed by "
-                                f"_execute_with_timeout."
-                            ),
-                        },
-                    ))
+        """Proxy to WatchdogService._loop for backward compat."""
+        await self._watchdog._loop()
 
     def _start_watchdog(self) -> None:
-        """Start the watchdog background task."""
-        if self.enable_watchdog and self._watchdog_task is None:
-            self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+        """Proxy to WatchdogService.start for backward compat."""
+        self._watchdog.start()
 
     def _stop_watchdog(self) -> None:
-        """Stop the watchdog background task."""
-        if self._watchdog_task:
-            self._watchdog_task.cancel()
-            self._watchdog_task = None
+        """Proxy to WatchdogService.stop for backward compat."""
+        self._watchdog.stop()
 
     async def execute(self, dag: DAG) -> DAG:
         """
@@ -323,7 +257,7 @@ class DAGExecutionEngine:
             raise ValueError(f"Invalid DAG: {e}")
 
         # M2.0: Start watchdog
-        self._running_nodes = {}
+        self._watchdog.clear()
         self._start_watchdog()
 
         # R3: Auto-serialize parallel generators without ownership contracts (#272 EC4)
@@ -510,7 +444,7 @@ class DAGExecutionEngine:
         finally:
             # M2.0: Stop watchdog
             self._stop_watchdog()
-            self._running_nodes = {}
+            self._watchdog.clear()
             self._running_tasks = {}
             # Shutdown dedicated thread pool to avoid RuntimeWarning on exit
             self._executor.shutdown(wait=False)
@@ -704,7 +638,7 @@ class DAGExecutionEngine:
         )
 
         # M2.0: Register with watchdog
-        self._running_nodes[node_id] = node
+        self._watchdog.register(node_id, node)
         current_task = asyncio.current_task()
         if current_task:
             self._running_tasks[node_id] = current_task
@@ -799,58 +733,21 @@ class DAGExecutionEngine:
             # explicitly includes a TEST_FILE_EXISTS criterion. This is
             # distinct from TESTS_PASS which means "tests must pass", not
             # "must create test files".
-            if node.agent_type == "generator" and node.output_artifacts:
-                has_test_file_criteria = any(
-                    self._is_test_file_exists_criterion(c) for c in node.success_criteria
-                )
-                if has_test_file_criteria:
-                    # Broader test file detection: test_*.py, *_test.py, *_spec.py,
-                    # files under tests/ or test/ directories
-                    def _is_test_file(artifact_path: str) -> bool:
-                        basename = artifact_path.lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-                        if basename.startswith("test_") or basename.endswith("_test.py"):
-                            return True
-                        if basename.endswith("_spec.py"):
-                            return True
-                        # Files inside tests/ or test/ directories
-                        lower_path = artifact_path.lower()
-                        if "/tests/" in lower_path or "/test/" in lower_path:
-                            if basename.endswith(".py"):
-                                return True
-                        return False
-
-                    has_test_files = any(
-                        _is_test_file(a) for a in node.output_artifacts
-                    )
-                    if not has_test_files:
-                        logger.warning(
-                            "Node %s: TEST_FILE_EXISTS required but no test files "
-                            "in output_artifacts — failing fast (#247)",
-                            node_id,
-                        )
-                        node.eval_feedback = (
-                            f"EVALUATION FAILED: You were required to create test "
-                            f"files, but none were found in your output.\n"
-                            f"Output artifacts: {node.output_artifacts}\n\n"
-                            f"You MUST create test files (e.g., test_*.py) for "
-                            f"your implementation. Create them using the write "
-                            f"tool BEFORE finishing.\n"
-                            f"Focus on: functional tests, edge cases, import "
-                            f"validation. Each source module should have a "
-                            f"corresponding test file."
-                        )
-                        node.error = "No test files created (TEST_FILE_EXISTS required)"
-                        node.status = NodeStatus.FAILED
-                        node.completed_at = datetime.now(timezone.utc)
-                        await self._emit(ExecutionEvent(
-                            node_id=node_id,
-                            event_type="failed",
-                            details={
-                                "reason": "no_test_files",
-                                "artifacts": node.output_artifacts,
-                            },
-                        ))
-                        return
+            # Delegated to QualityGate (#177 PR4).
+            test_check = self._quality_gate.check_test_file_requirement(
+                node, node_id,
+            )
+            if test_check is not None:
+                node.eval_feedback = test_check.eval_feedback
+                node.error = test_check.error
+                node.status = test_check.node_status
+                node.completed_at = datetime.now(timezone.utc)
+                await self._emit(ExecutionEvent(
+                    node_id=node_id,
+                    event_type=test_check.event_type,
+                    details=test_check.event_details,
+                ))
+                return
 
             if self.evaluator and node.success_criteria and node.agent_type == "generator":
                 if not self.work_dir:
@@ -883,111 +780,25 @@ class DAGExecutionEngine:
                     ),
                 )
 
-                # Store auto-eval result for downstream evaluator agents (#145)
-                node.auto_eval_result = eval_result.model_dump()
+                # Delegate evaluation result processing to QualityGate (#177 PR4).
+                outcome = self._quality_gate.evaluate(
+                    eval_result, node, node_id, eval_work_dir,
+                )
 
-                if not eval_result.passed:
-                    # Delegate retry regression tracking to RetryPolicyEngine (#177 PR4).
-                    is_regression, best = self._retry_policy.record_attempt(
-                        node_id=node_id,
-                        score=eval_result.score,
-                        feedback=eval_result.feedback,
-                        output_artifacts=node.output_artifacts,
-                        work_dir=eval_work_dir,
-                        eval_metadata=eval_result.metadata,
-                        criteria_results=getattr(
-                            eval_result, "criteria_results", {},
-                        ),
-                        passed=eval_result.passed,
-                    )
-                    # Regression detected: restore best attempt files (#212).
-                    if is_regression and best and "file_snapshot" in best:
-                        logger.info(
-                            "Node %s: restoring best attempt artifacts "
-                            "(score %.1f > current %.1f)",
-                            node_id, best["score"], eval_result.score,
-                        )
-                        self._retry_policy.restore_file_snapshot(
-                            eval_work_dir, best["file_snapshot"],
-                        )
-                        # Delete extra files added by the regression attempt
-                        # that were not present in the best artifact set.
-                        best_artifact_set = best.get(
-                            "artifact_set", set(best["file_snapshot"].keys()),
-                        )
-                        for artifact in (node.output_artifacts or []):
-                            if artifact not in best_artifact_set:
-                                path = os.path.join(eval_work_dir, artifact)
-                                try:
-                                    if os.path.isfile(path):
-                                        os.remove(path)
-                                        logger.info(
-                                            "Node %s: removed extra file %s "
-                                            "not in best attempt",
-                                            node_id, artifact,
-                                        )
-                                except OSError:
-                                    pass
-                        node.output_artifacts = best["artifacts"]
-                    node.retry_count += 1
-                    # Build retry feedback with regression awareness.
-                    best = self._retry_policy.get_best(node_id)
-                    regression_hint = ""
-                    if is_regression or (best and eval_result.score < best["score"]):
-                        regression_hint = (
-                            "\n\nWARNING: Your previous attempt scored higher "
-                            f"({best['score']:.1f} vs current {eval_result.score:.1f}). "
-                            "The code may already be correct — only fix the "
-                            "specific issues reported, do NOT rewrite working code."
-                        )
-                    # Add targeted lint fix guidance (#151)
-                    prev_issues = best.get("lint_issues", set()) if best else set()
-                    curr_issues = set(
-                        eval_result.metadata.get(
-                            "lint_new_issues",
-                            eval_result.metadata.get("lint_all_issues", []),
-                        )
-                    )
-                    new_only = curr_issues - prev_issues
-                    if new_only and not regression_hint:
-                        lint_guidance = (
-                            "\n\nLINT_FIX_GUIDANCE: Fix ONLY these new lint "
-                            "issues. Do NOT rewrite working code:\n"
-                            + "\n".join(
-                                f"  - {iss}" for iss in sorted(new_only)[:10]
-                            )
-                        )
-                    else:
-                        lint_guidance = ""
-                    node.eval_feedback = (
-                        f"{eval_result.feedback}\n\n"
-                        f"Output artifacts: {node.output_artifacts or 'none'}\n\n"
-                        f"IMPORTANT: Fix the issues INCREMENTALLY. Do NOT rewrite working "
-                        f"code from scratch. Use the edit tool to fix specific problems.\n"
-                        f"Fix ALL issues listed above."
-                        f"{regression_hint}"
-                        f"{lint_guidance}"
-                    )
-                    node.error = f"Evaluation failed (score: {eval_result.score}): {eval_result.feedback}"
-                    node.status = NodeStatus.FAILED
+                node.auto_eval_result = outcome.auto_eval_result
+
+                if not outcome.passed:
+                    node.retry_count += outcome.retry_count_increment
+                    node.eval_feedback = outcome.eval_feedback
+                    node.error = outcome.error
+                    node.status = outcome.node_status
                     node.completed_at = datetime.now(timezone.utc)
 
-                    # On regression, align auto_eval_result with the best
-                    # attempt so downstream evaluators get accurate info
-                    # (#145 review feedback).
-                    if is_regression and best:
-                        node.auto_eval_result = {
-                            "passed": False,
-                            "score": best["score"],
-                            "feedback": best["feedback"],
-                            "_note": (
-                                "Updated to best-attempt result "
-                                "(regression detected)"
-                            ),
-                        }
-                    # If node exhausted retries and is ultimately not
-                    # successful, clear auto_eval_result so no stale
-                    # result leaks to downstream evaluators (#145).
+                    # Update artifacts from regression restoration
+                    if outcome.restored_artifacts is not None:
+                        node.output_artifacts = outcome.restored_artifacts
+
+                    # If node exhausted retries, clear auto_eval_result
                     if node.retry_count >= node.max_retries:
                         node.auto_eval_result = None
 
@@ -1117,7 +928,7 @@ class DAGExecutionEngine:
         finally:
             # M2.0: Unregister from watchdog on completion (unless killed by watchdog)
             if node.health_status != NodeHealth.DEAD:
-                self._running_nodes.pop(node_id, None)
+                self._watchdog.unregister(node_id)
                 self._running_tasks.pop(node_id, None)
             # Clean up per-node workspace (#176 PR2)
             if node_workspace and self.backend_manager:

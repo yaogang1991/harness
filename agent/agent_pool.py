@@ -148,6 +148,11 @@ Rules:
 19. ASYNC AWARENESS: When testing async functions, use `asyncio.run()` or
     `pytest-asyncio`. NEVER call an async function synchronously — it returns
     a coroutine object, not the actual result.
+20. EARLY FILE OUTPUT: For tasks with multiple features, write each feature's
+    files as soon as you finish implementing it. Do NOT wait to implement all
+    features before writing any files. Write feature A's file, then feature B's
+    file, etc. This ensures at least partial output even if the iteration budget
+    runs out (#409).
 
 Work systematically: gather context → implement → verify.
 """,
