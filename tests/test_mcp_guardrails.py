@@ -76,3 +76,16 @@ class TestMCPRiskMapping:
 
         guardrails.register_mcp_risk_map([])
         assert "mcp__test__tool" not in guardrails.RISK_MAP
+
+    def test_risk_map_instance_isolation(self):
+        """RISK_MAP mutations must not leak across Guardrails instances (#413)."""
+        policy = GuardrailPolicy(mode="accept_edits")
+        registry = ToolRegistry()
+        g1 = Guardrails(policy, registry)
+        g2 = Guardrails(policy, registry)
+
+        mcp_tool = self._make_tool_info("unique_tool")
+        g1.register_mcp_risk_map([mcp_tool])
+
+        assert "mcp__test__unique_tool" in g1.RISK_MAP
+        assert "mcp__test__unique_tool" not in g2.RISK_MAP

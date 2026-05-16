@@ -392,6 +392,13 @@ async def cmd_plan(args):
     store = SessionStore(config.event_store_path)
     registry = load_registry(args.project)
 
+    # M3.6: Load skill registry for plan-influencing skills (#413 review).
+    skill_registry = None
+    skills_dir = Path(args.project) / ".harness" / "skills" if args.project else None
+    if skills_dir and skills_dir.is_dir():
+        from skills.registry import SkillRegistry
+        skill_registry = SkillRegistry(skills_dir=skills_dir)
+
     # Use template if specified (no LLM needed)
     if args.template:
         variables = _parse_template_vars(args.var)
@@ -427,6 +434,7 @@ async def cmd_plan(args):
             agent_registry=registry,
             llm_router=llm_router,
             learning_optimizer=learning_optimizer,
+            skill_registry=skill_registry,
         )
 
         print(f"Planning: {args.requirement}")

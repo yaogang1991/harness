@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def _load_claude_settings() -> dict[str, str]:
@@ -90,6 +90,16 @@ class MCPServerConfig(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
     default_risk_level: str = "medium"                # LOW, MEDIUM, HIGH, CRITICAL
+
+    @field_validator("default_risk_level")
+    @classmethod
+    def _validate_risk_level(cls, v: str) -> str:
+        valid = {"low", "medium", "high", "critical"}
+        if v.lower() not in valid:
+            raise ValueError(
+                f"Invalid default_risk_level '{v}', must be one of {valid}"
+            )
+        return v.lower()
 
 
 class MCPConfig(BaseModel):

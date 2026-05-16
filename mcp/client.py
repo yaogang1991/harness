@@ -45,7 +45,14 @@ class MCPServerConnection:
             from mcp.client.stdio import stdio_client, StdioServerParameters
             from mcp import ClientSession
 
-            env = {**os.environ, **self.config.env} if self.config.env else None
+            # Build minimal env: PATH + explicit config vars only (#413 review).
+            # Avoids leaking secrets (ANTHROPIC_API_KEY etc.) to subprocesses.
+            base_env = {
+                k: v
+                for k, v in os.environ.items()
+                if k in ("PATH", "HOME", "LANG", "TERM", "SHELL", "USER")
+            }
+            env = {**base_env, **self.config.env} if self.config.env else base_env
             server_params = StdioServerParameters(
                 command=self.config.command,
                 args=self.config.args,

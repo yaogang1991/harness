@@ -158,12 +158,27 @@ class SkillRegistry:
 
     def _load_context_files(self, context_files: list[str]) -> str:
         """Read and concatenate context file contents for skill injection."""
+        project_root = self.skills_dir.parent.parent.resolve()
         parts: list[str] = []
         for file_path in context_files:
             path = Path(file_path)
             if not path.is_absolute():
-                path = self.skills_dir.parent.parent / path
-            if path.exists() and path.is_file():
+                path = project_root / path
+            # Containment check: prevent path traversal (#413 review).
+            try:
+                resolved = path.resolve()
+                if not (
+                    resolved == project_root
+                    or project_root in resolved.parents
+                ):
+                    logger.warning(
+                        "Context file escapes project root: %s", file_path
+                    )
+                    continue
+            except Exception:
+                logger.warning("Invalid context file path: %s", file_path)
+                continue
+            if resolved.exists() and resolved.is_file():
                 try:
                     content = path.read_text(encoding="utf-8")
                     parts.append(f"### {path.name}\n{content}")

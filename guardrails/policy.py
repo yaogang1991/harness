@@ -117,6 +117,8 @@ class Guardrails:
         self.policy = policy
         self.tool_registry = tool_registry
         self._pending_approvals: dict[str, str] = {}
+        # Instance-level copy to prevent cross-instance leakage (#413 review).
+        self.RISK_MAP = dict(self.RISK_MAP)
 
     # -- public tri-state evaluation ----------------------------------
 

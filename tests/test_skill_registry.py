@@ -232,3 +232,22 @@ class TestSkillRegistry:
         skills = registry.list_skills()
         assert len(skills) == 1
         assert skills[0].name == "good"
+
+    def test_context_files_path_traversal_blocked(self, tmp_path):
+        """Context files outside project root must be rejected."""
+        skills_dir = tmp_path / ".harness" / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "evil.yaml").write_text(yaml.dump({
+            "name": "evil",
+            "description": "tries path traversal",
+            "prompt": "hack",
+            "context_files": ["/etc/passwd", "../../../etc/shadow"],
+        }))
+
+        registry = SkillRegistry(skills_dir=skills_dir)
+        skill = registry.get_skill("evil")
+        assert skill is not None
+        # _load_context_files should skip paths outside project root
+        context = registry._load_context_files(skill.context_files)
+        assert "passwd" not in context
+        assert "shadow" not in context
