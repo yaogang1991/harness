@@ -116,13 +116,26 @@ class LocalSandbox(SandboxProvider):
 
 
 class DockerSandbox(SandboxProvider):
-    """Execute commands in a Docker container (M3+ stub).
+    """Execute commands in a Docker container (#179 PR4).
 
-    This is a placeholder for future implementation.
-    Docker sandbox provides full process/network/filesystem isolation.
+    Provides process, network, and filesystem isolation by running commands
+    inside a Docker container with the workspace mounted as a volume.
+
+    Security defaults:
+    - network_mode=none (no network access)
+    - Only workspace directory is mounted
+    - No host environment variables leaked by default
     """
 
     sandbox_type = ExecutionSandbox.DOCKER
+
+    def __init__(
+        self,
+        image: str = "python:3.12-slim",
+        network_mode: str = "none",
+    ) -> None:
+        self._image = image
+        self._network_mode = network_mode
 
     async def run_command(
         self,
@@ -131,9 +144,87 @@ class DockerSandbox(SandboxProvider):
         timeout: int = 120,
         env: dict[str, str] | None = None,
     ) -> CommandResult:
-        raise NotImplementedError(
-            "DockerSandbox not yet implemented (planned for M3)"
-        )
+        """Execute command in a Docker container with workspace mounted."""
+        import asyncio
+        import time
+
+        if not self.is_available():
+            raise NotImplementedError(
+                "DockerSandbox requires Docker but it is not available. "
+                "Install Docker or switch to 'local' sandbox."
+            )
+
+        docker_cmd = self._build_docker_command(command, cwd, env)
+        start = time.monotonic()
+
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                docker_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout,
+            )
+            elapsed = int((time.monotonic() - start) * 1000)
+
+            return CommandResult(
+                success=proc.returncode == 0,
+                exit_code=proc.returncode or 0,
+                stdout=stdout.decode(errors="replace"),
+                stderr=stderr.decode(errors="replace"),
+                duration_ms=elapsed,
+            )
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+                await proc.communicate()
+            except (ProcessLookupError, OSError):
+                pass
+            return CommandResult(
+                success=False,
+                exit_code=-1,
+                stderr=f"Command timed out after {timeout}s",
+                duration_ms=int((time.monotonic() - start) * 1000),
+            )
+
+    def _build_docker_command(
+        self,
+        command: str,
+        cwd: str,
+        env: dict[str, str] | None = None,
+    ) -> str:
+        """Build the docker run shell command."""
+        parts = [
+            "docker",
+            "run",
+            "--rm",
+            f"-v \"{cwd}:/workspace\"",
+            f"--network {self._network_mode}",
+            "-w /workspace",
+        ]
+
+        # Pass env variables explicitly (whitelist, not host leak)
+        if env:
+            for key, value in env.items():
+                parts.append(f"-e {key}={value}")
+
+        parts.append(self._image)
+        parts.append(f"bash -c {repr(command)}")
+
+        return " ".join(parts)
 
     def is_available(self) -> bool:
-        return False
+        """Check if Docker CLI is available on the host."""
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["docker", "info"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return False
