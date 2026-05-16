@@ -28,9 +28,9 @@ A previous execution plan has partially failed. You need to create a new plan fo
    - impl_patch_core (apply + create)
    - impl_patch_advanced (reverse + merge)
    - impl_foundation_patch (shared models)
-3. **Reuse successful outputs**: Dependent nodes can reference artifacts from already-completed successful nodes.
-4. **Valid agent types ONLY**: Use ONLY the agent types listed above.
-5. **Keep it minimal**: Only include nodes that still need to be executed.
+4. **Reuse successful outputs**: Dependent nodes can reference artifacts from already-completed successful nodes.
+5. **Valid agent types ONLY**: Use ONLY the agent types listed above.
+6. **Keep it minimal**: Only include nodes that still need to be executed.
 
 ## Output Format
 

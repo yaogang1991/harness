@@ -421,7 +421,6 @@ class IntelligentOrchestrator:
         Uses the same heuristic as PlanValidator._estimate_feature_count
         to detect enumerated lists and feature patterns.
         """
-        from orchestrator.plan_validator import PlanValidator
         return PlanValidator._estimate_feature_count(task_description)
 
     def _plan_to_dag(self, plan: OrchestratorPlan) -> DAG:
