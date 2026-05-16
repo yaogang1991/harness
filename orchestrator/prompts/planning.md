@@ -76,7 +76,21 @@ Your job: Analyze the user's requirement and produce an execution plan (DAG).
     c. Create separate `impl_tests_<module>` nodes for each subsystem's tests
     Example for a system with 6 modules: foundation → (impl_core, impl_api, impl_services) parallel → (impl_tests_core, impl_tests_api, impl_tests_services) parallel → eval.
     This prevents LLM context exhaustion where a node creates 27/50 files then stops.
-15. **Foundation node completeness**: When using a foundation/impl_foundation
+15. **Decompose by feature complexity**: A single generator node MUST NOT be tasked
+    with more than 3 distinct complex features. A "complex feature" requires its own
+    class, module, or significant algorithmic logic (e.g., "implement 3-way merge",
+    "build rate limiter with token buckets", "create patch parser with unified diff
+    support"). When a requirement includes 4+ complex features:
+    a. Group related features into 2-3 generator nodes, each with at most 2-3 features
+    b. Extract shared models/types into a foundation node that feature nodes depend on
+    c. Each feature node should own a clear, non-overlapping set of files
+    Example: A "patch toolkit" with apply/create/reverse/merge features should be split:
+    - impl_foundation: shared PatchResult model, error types, constants
+    - impl_patch_core: apply_patch + create_patch (related operations)
+    - impl_patch_advanced: reverse_patch + three_way_merge (related operations)
+    This prevents the LLM from exhausting its iteration budget reasoning about all
+    features simultaneously without writing any files (#409).
+16. **Foundation node completeness**: When using a foundation/impl_foundation
     node that downstream feature nodes depend on, the foundation node MUST
     include ALL shared definitions that ANY feature node will need:
     - ALL database model/schema definitions (not just "core" ones)
@@ -87,21 +101,21 @@ Your job: Analyze the user's requirement and produce an execution plan (DAG).
     a Transaction model, the foundation node must define BOTH models in its
     models.py/database.py. Otherwise, `create_all()` won't create the missing
     tables and downstream tests fail with "no such table" errors (#297).
-16. **Database schema analysis**: When the requirement involves database models,
+17. **Database schema analysis**: When the requirement involves database models,
     schemas, or ORM classes, you MUST analyze the complete database schema first.
     Include ALL table definitions and model classes needed by EVERY downstream node
     in the foundation/planner node's task description. Incomplete schema info causes
     downstream generators to create conflicting or missing tables. If using SQLAlchemy,
     list all models that should be registered in `Base.metadata` so `create_all()`
     creates every required table.
-17. **Reconcile with existing files**: If the project context includes
+18. **Reconcile with existing files**: If the project context includes
     `existing_files`, you MUST review them before planning. Decide for each
     existing file whether to REUSE it (reference in generator task descriptions
     so generators edit rather than recreate) or REPLACE it (explicitly state
     the old file should be deleted/replaced). NEVER create duplicate files
     that serve the same purpose as existing ones. Include the file inventory
     in your planning reasoning.
-16. **Retry continuity**: When the prompt includes "Retry Context", this is a
+19. **Retry continuity**: When the prompt includes "Retry Context", this is a
     retry of a previous failed/timed-out attempt. You MUST:
     a. Review ALL existing files listed above — they represent completed work
     b. Only plan nodes for MISSING or INCOMPLETE work

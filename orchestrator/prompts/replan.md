@@ -19,6 +19,15 @@ A previous execution plan has partially failed. You need to create a new plan fo
 
 1. **Preserve completed work**: Do NOT re-plan nodes that already succeeded. Only plan for failed, skipped, or pending nodes.
 2. **Address the root cause**: The new plan should specifically address why the failed node errored (e.g., different agent type, simpler task decomposition, alternative approach).
+3. **Split over-complex nodes**: If the failure reason mentions "zero output artifacts",
+   the failed node was too complex for a single generator. Split it into 2-3 smaller
+   nodes, each with at most 2-3 distinct features. Extract shared types/models into
+   a foundation node. Each split node should have clear, focused file ownership.
+   Example: If "impl_patch" failed with zero output while tasked with
+   apply/create/reverse/merge, split into:
+   - impl_patch_core (apply + create)
+   - impl_patch_advanced (reverse + merge)
+   - impl_foundation_patch (shared models)
 3. **Reuse successful outputs**: Dependent nodes can reference artifacts from already-completed successful nodes.
 4. **Valid agent types ONLY**: Use ONLY the agent types listed above.
 5. **Keep it minimal**: Only include nodes that still need to be executed.

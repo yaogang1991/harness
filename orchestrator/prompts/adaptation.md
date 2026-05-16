@@ -32,5 +32,9 @@ CRITICAL RULES:
 2. Choose "replan" ONLY if the task decomposition or agent assignment is wrong.
 3. Choose "abort" ONLY for critical security issues or data loss risks.
 4. Choose "skip" ONLY for non-critical optional nodes.
+5. If the failure reason contains "zero output artifacts" and the task description
+   lists multiple distinct features (3+), the task is too complex for a single node.
+   Choose "replan" with a note to split the node into 2-3 smaller nodes, each handling
+   a subset of features. Extract shared types into a foundation node.
 
 Default behavior for evaluation failures: retry.
