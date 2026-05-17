@@ -4,6 +4,8 @@ Tests for #179 PR 3+4: sandbox integration in service.py and DockerSandbox MVP.
 PR 3: BackendManager.sandbox → SyncSandboxAdapter → ToolRegistry wiring
 PR 4: Minimal DockerSandbox implementation
 """
+import os
+
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -194,3 +196,77 @@ class TestSyncAdapterWithDockerSandbox:
             # Adapter should handle the error gracefully
             assert isinstance(result, ToolCommandResult)
             assert result.returncode != 0 or result.stderr
+
+
+# ---------------------------------------------------------------------------
+# #456: Credential isolation — sandbox processes cannot access API keys
+# ---------------------------------------------------------------------------
+
+class TestLocalSandboxCredentialIsolation:
+    """Verify LocalSandbox strips sensitive env vars from subprocess env."""
+
+    def test_build_safe_env_strips_api_keys(self):
+        """_build_safe_env removes keys matching sensitive patterns."""
+        sandbox = LocalSandbox()
+        with patch.dict(
+            os.environ,
+            {
+                "ANTHROPIC_API_KEY": "sk-test",
+                "OPENAI_API_KEY": "sk-openai",
+                "AWS_ACCESS_KEY_ID": "AKIA123",
+                "GITHUB_TOKEN": "ghp_abc",
+                "MY_API_KEY": "key123",
+                "PATH": "/usr/bin",
+                "HOME": "/home/user",
+            },
+            clear=True,
+        ):
+            safe_env = sandbox._build_safe_env()
+        assert "ANTHROPIC_API_KEY" not in safe_env
+        assert "OPENAI_API_KEY" not in safe_env
+        assert "AWS_ACCESS_KEY_ID" not in safe_env
+        assert "GITHUB_TOKEN" not in safe_env
+        assert "MY_API_KEY" not in safe_env
+        assert safe_env["PATH"] == "/usr/bin"
+        assert safe_env["HOME"] == "/home/user"
+
+    def test_build_safe_env_returns_explicit_env_unchanged(self):
+        """When caller provides explicit env, it is passed through."""
+        sandbox = LocalSandbox()
+        explicit = {"MY_API_KEY": "caller_controls_this"}
+        result = sandbox._build_safe_env(explicit)
+        assert result is explicit
+        assert result["MY_API_KEY"] == "caller_controls_this"
+
+    def test_build_safe_env_returns_explicit_dict_copy(self):
+        """Explicit env is returned as-is (not stripped)."""
+        sandbox = LocalSandbox()
+        explicit = {"ANTHROPIC_API_KEY": "sk-explicit"}
+        result = sandbox._build_safe_env(explicit)
+        assert result["ANTHROPIC_API_KEY"] == "sk-explicit"
+
+    @pytest.mark.asyncio
+    async def test_api_key_not_visible_in_sandbox(self):
+        """Sandbox subprocess cannot read ANTHROPIC_API_KEY."""
+        sandbox = LocalSandbox()
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-secret-key"}):
+            result = await sandbox.run_command(
+                "echo $ANTHROPIC_API_KEY", cwd="/tmp",
+            )
+        assert "sk-test-secret-key" not in result.stdout
+
+    @pytest.mark.asyncio
+    async def test_path_preserved_in_sandbox(self):
+        """Non-sensitive env vars like PATH are preserved."""
+        sandbox = LocalSandbox()
+        result = await sandbox.run_command("echo $PATH", cwd="/tmp")
+        assert result.stdout.strip()  # PATH is non-empty
+
+    @pytest.mark.asyncio
+    async def test_explicit_env_not_stripped(self):
+        """When caller provides explicit env, values are passed through."""
+        sandbox = LocalSandbox()
+        result = await sandbox.run_command(
+            "echo $MY_VAR", cwd="/tmp", env={"MY_VAR": "test_value"},
+        )
+        assert "test_value" in result.stdout
