@@ -179,6 +179,6 @@ class LearningOptimizer:
             insight.category.value,
         ]
         # Add key tokens from description
-        from memory.manager import _extract_keywords
-        keywords.extend(_extract_keywords(insight.description, max_keywords=3))
+        from memory.manager import extract_keywords
+        keywords.extend(extract_keywords(insight.description, max_keywords=3))
         return keywords

@@ -37,8 +37,12 @@ _STOP_WORDS = frozenset({
 })
 
 
-def _extract_keywords(text: str, max_keywords: int = 5) -> list[str]:
-    """Extract keywords from text using simple frequency heuristics."""
+def extract_keywords(text: str, max_keywords: int = 5) -> list[str]:
+    """Extract keywords from text using simple frequency heuristics.
+
+    Public API for keyword extraction used by memory, learning, and
+    sharing modules.
+    """
     tokens = re.findall(r"\w+", text.lower())
     freq: dict[str, int] = {}
     for t in tokens:
@@ -48,6 +52,10 @@ def _extract_keywords(text: str, max_keywords: int = 5) -> list[str]:
     # Sort by frequency descending, take top N
     sorted_words = sorted(freq.items(), key=lambda x: x[1], reverse=True)
     return [w for w, _ in sorted_words[:max_keywords]]
+
+
+# Backward-compat alias
+_extract_keywords = extract_keywords
 
 
 def _compute_relevance(
