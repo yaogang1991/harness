@@ -13,6 +13,7 @@ operational scripts (npm install, pytest) that need access to the host.
 from __future__ import annotations
 
 import abc
+import os
 from dataclasses import dataclass
 
 from backend.base import ExecutionSandbox
@@ -61,9 +62,43 @@ class SandboxProvider(abc.ABC):
 
 
 class LocalSandbox(SandboxProvider):
-    """Execute commands directly on the host (current default behavior)."""
+    """Execute commands directly on the host (current default behavior).
+
+    Strips sensitive environment variables (API keys, tokens) from
+    subprocess env to prevent credential leakage from agent code (#456).
+    """
 
     sandbox_type = ExecutionSandbox.LOCAL
+
+    SENSITIVE_ENV_PATTERNS: tuple[str, ...] = (
+        "ANTHROPIC_",
+        "OPENAI_",
+        "AWS_",
+        "GITHUB_TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "TOKEN",
+        "API_KEY",
+        "API_SECRET",
+        "PRIVATE_KEY",
+    )
+
+    def _build_safe_env(self, env: dict[str, str] | None = None) -> dict[str, str]:
+        """Build environment dict without credentials.
+
+        If caller provides explicit env, return it unchanged (caller controls).
+        If env is None, build from os.environ with sensitive keys stripped.
+        Matches if any pattern appears as a prefix OR anywhere in the key name.
+        """
+        if env is not None:
+            return env
+        return {
+            k: v for k, v in os.environ.items()
+            if not any(
+                k.upper().startswith(p) or p in k.upper()
+                for p in self.SENSITIVE_ENV_PATTERNS
+            )
+        }
 
     async def run_command(
         self,
@@ -83,7 +118,7 @@ class LocalSandbox(SandboxProvider):
                 cwd=cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=env,
+                env=self._build_safe_env(env),
             )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout
