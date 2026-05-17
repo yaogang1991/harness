@@ -564,10 +564,10 @@ class IntelligentOrchestrator:
     _DEFAULT_CONTEXT_WINDOW = 200_000
     # Conservative chars-per-token estimate (English + code mix).
     _CHARS_PER_TOKEN = 3.5
-    # Anthropic API total message size limit (bytes).  We prune at 80% to
+    # Anthropic API total message size limit (bytes).  We prune at 60% to
     # leave headroom for the response and API envelope overhead (#419).
     _MAX_MESSAGE_BYTES = 2_097_152  # 2 MiB
-    _PRUNE_THRESHOLD = 0.80
+    _PRUNE_THRESHOLD = 0.60  # 1.2 MiB — aggressive to prevent R102/R103 failures
 
     def _estimate_tokens(self, text: str) -> int:
         """Rough token estimate: chars / 3.5."""
@@ -666,10 +666,12 @@ class IntelligentOrchestrator:
     ) -> list[dict]:
         """Prune messages to stay within the Anthropic 2 MiB limit (#419).
 
-        Strategy:
+        Strategy (progressively aggressive):
         1. Keep the system prompt (index 0) and the last user message intact.
-        2. Truncate intermediate assistant messages to a summary.
-        3. If still too large, truncate the user message content.
+        2. Truncate intermediate assistant messages to 500 chars.
+        3. Truncate user messages to 2000 chars.
+        4. Drop intermediate messages entirely, keep only first + last.
+        5. Hard cap: truncate the last user message if still over limit.
         """
         max_bytes = int(self._MAX_MESSAGE_BYTES * self._PRUNE_THRESHOLD)
         current = self._estimate_messages_bytes(messages)
@@ -689,11 +691,11 @@ class IntelligentOrchestrator:
         for i in range(1, len(pruned) - 1):
             if pruned[i].get("role") == "assistant":
                 content = pruned[i].get("content", "")
-                if len(content) > 2000:
+                if len(content) > 500:
                     pruned[i] = {
                         "role": "assistant",
                         "content": (
-                            content[:2000]
+                            content[:500]
                             + "\n... (truncated for message size limit)"
                         ),
                     }
@@ -706,10 +708,10 @@ class IntelligentOrchestrator:
         for i in range(1, len(pruned)):
             if pruned[i].get("role") == "user":
                 content = pruned[i].get("content", "")
-                if len(content) > 4000:
+                if len(content) > 2000:
                     pruned[i] = dict(pruned[i])
                     pruned[i]["content"] = (
-                        content[:4000]
+                        content[:2000]
                         + "\n... (truncated for message size limit)"
                     )
 
@@ -722,6 +724,56 @@ class IntelligentOrchestrator:
             pruned = [pruned[0], pruned[-1]]
             logger.warning(
                 "Dropped intermediate messages — keeping only system + last user."
+            )
+
+        current = self._estimate_messages_bytes(pruned)
+        if current <= max_bytes:
+            return pruned
+
+        # Pass 4: hard cap — truncate system prompt if it's the largest
+        # contributor, otherwise truncate the last message
+        system_size = len(pruned[0].get("content", "").encode("utf-8", errors="replace"))
+        last_size = len(pruned[-1].get("content", "").encode("utf-8", errors="replace"))
+        budget = max_bytes - 200  # Leave 200 bytes for overhead
+
+        if system_size > budget // 2 and len(pruned) > 1:
+            # Truncate system prompt to half budget
+            half = budget // 2
+            pruned[0] = dict(pruned[0])
+            sys_content = pruned[0]["content"]
+            sys_bytes = sys_content.encode("utf-8", errors="replace")
+            pruned[0]["content"] = (
+                sys_bytes[:half].decode("utf-8", errors="replace")
+                + "\n... (system prompt truncated for message size limit)"
+            )
+            remaining = budget - len(pruned[0]["content"].encode("utf-8", errors="replace"))
+            if len(pruned) > 1 and last_size > remaining:
+                pruned[-1] = dict(pruned[-1])
+                last_bytes = pruned[-1]["content"].encode("utf-8", errors="replace")
+                pruned[-1]["content"] = (
+                    last_bytes[:remaining].decode("utf-8", errors="replace")
+                    + "\n... (truncated for message size limit)"
+                )
+        else:
+            # Single message or last message is the biggest — truncate it
+            for i in range(len(pruned)):
+                if pruned[i].get("content") and len(
+                    pruned[i]["content"].encode("utf-8", errors="replace")
+                ) > budget:
+                    pruned[i] = dict(pruned[i])
+                    content_bytes = pruned[i]["content"].encode("utf-8", errors="replace")
+                    pruned[i]["content"] = (
+                        content_bytes[:budget].decode("utf-8", errors="replace")
+                        + "\n... (truncated for message size limit)"
+                    )
+                    break
+
+        final_size = self._estimate_messages_bytes(pruned)
+        if final_size > self._MAX_MESSAGE_BYTES:
+            logger.error(
+                "After aggressive pruning, messages still %d bytes (limit %d). "
+                "This will likely fail at the API.",
+                final_size, self._MAX_MESSAGE_BYTES,
             )
 
         return pruned
