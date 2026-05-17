@@ -14,7 +14,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from core.models import AgentMessage
 from core.models import DAGNode, HandoffArtifact, AgentCapability
@@ -22,6 +22,8 @@ from core.config import LLMConfig
 from core.agent_registry import AgentRegistry
 from core.llm_router import LLMRouter
 from core.exceptions import PendingApprovalError
+from control_plane.approval import ApprovalRepository
+from memory.manager import MemoryManager
 from session.store import SessionStore
 from agent.worker import AgentWorker
 from tools.registry import ToolRegistry
@@ -41,7 +43,7 @@ class ExecutionContext:
     job_id: str = ""
     run_id: str | None = None
     node_id: str | None = None
-    approval_repo: Any | None = None
+    approval_repo: ApprovalRepository | None = None
 
 
 class WorkerAgent:
@@ -70,9 +72,9 @@ class WorkerAgent:
         max_iterations: int = 50,
         timeout: int = 300,  # Deprecated: timeout managed by dag_engine (#360)
         max_context_tokens: int = 100_000,
-        memory_manager: Any | None = None,
+        memory_manager: MemoryManager | None = None,
         job_id: str = "",
-        approval_repo: Any | None = None,
+        approval_repo: ApprovalRepository | None = None,
     ):
         self.capability = capability
         self.llm_config = llm_config
@@ -147,8 +149,8 @@ class WorkerAgent:
         session_id: str,
         node_id: str | None = None,
         run_id: str | None = None,
-        cancel_event: Any | None = None,
-        progress_callback: Any | None = None,
+        cancel_event: asyncio.Event | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """
         Execute this agent's task with isolated context.
@@ -175,8 +177,8 @@ class WorkerAgent:
         session_id: str,
         node_id: str | None = None,
         context: ExecutionContext | None = None,
-        cancel_event: Any | None = None,
-        progress_callback: Any | None = None,
+        cancel_event: asyncio.Event | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """Internal execute implementation."""
         # Inject runtime environment context so LLM doesn't guess paths (#144)
@@ -272,8 +274,8 @@ Execute using your available tools. Produce clear, verifiable output.
         session_id: str,
         context: ExecutionContext | None = None,
         node_id: str = "",
-        cancel_event: Any | None = None,
-        progress_callback: Any | None = None,
+        cancel_event: asyncio.Event | None = None,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """Run agent loop and collect results via AgentWorker.
 
@@ -487,9 +489,9 @@ class AgentPool:
         timeout: int = 300,  # Deprecated: timeout managed by dag_engine (#360)
         max_context_tokens: int = 100_000,
         llm_router: LLMRouter | None = None,
-        memory_manager: Any | None = None,
+        memory_manager: MemoryManager | None = None,
         job_id: str = "",
-        approval_repo: Any | None = None,
+        approval_repo: ApprovalRepository | None = None,
         run_id: str | None = None,
     ):
         self.llm_config = llm_config
@@ -520,8 +522,8 @@ class AgentPool:
     def create_worker(
         self,
         agent_type: str,
-        tool_registry: Any | None = None,
-        guardrails: Any | None = None,
+        tool_registry: ToolRegistry | None = None,
+        guardrails: Guardrails | None = None,
     ) -> WorkerAgent:
         """Create a fresh WorkerAgent instance for the given type.
 
@@ -575,8 +577,8 @@ class AgentPool:
         async def _executor(
             node: DAGNode,
             artifacts: list[HandoffArtifact],
-            cancel_event: Any | None = None,
-            progress_callback: Any | None = None,
+            cancel_event: asyncio.Event | None = None,
+            progress_callback: Callable[[str], None] | None = None,
             workspace_path: str | None = None,
         ) -> dict:
             # Per-node workspace isolation: create ToolRegistry with node's
