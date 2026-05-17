@@ -75,6 +75,31 @@ class TestContextManagement:
         result = worker._truncate_messages(msgs, 10000)
         assert result == msgs
 
+    def test_estimate_tokens_cjk_content(self):
+        """CJK characters use ~2 chars/token, not 4 (#479)."""
+        cjk_text = "你" * 400  # 400 CJK characters
+        msgs = [{"role": "user", "content": cjk_text}]
+        tokens = AgentWorker._estimate_tokens(msgs)
+        # CJK: 400 // 2 = 200 tokens
+        assert tokens == 200
+
+    def test_estimate_tokens_mixed_cjk_and_english(self):
+        """Mixed content: CJK + English each estimated correctly (#479)."""
+        msgs = [{"role": "user", "content": "你好" * 50 + "a" * 200}]
+        tokens = AgentWorker._estimate_tokens(msgs)
+        # CJK: 100 // 2 = 50, English: 200 // 4 = 50, total = 100
+        assert tokens == 100
+
+    def test_estimate_tokens_cjk_tool_args(self):
+        """CJK in tool call arguments is also estimated correctly (#479)."""
+        msgs = [{"role": "assistant", "content": "", "tool_calls": [
+            {"arguments": {"key": "代码" * 100}}
+        ]}]
+        tokens = AgentWorker._estimate_tokens(msgs)
+        # 200 CJK chars + a few ASCII from dict str(); well above pure ASCII
+        # estimate of ~8 tokens for same-length dict representation
+        assert tokens >= 90
+
 
 class TestArtifactTracking:
     def test_tracks_write(self, worker, tmp_path):
