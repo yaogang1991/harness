@@ -411,13 +411,22 @@ class AgentWorker:
 
     @staticmethod
     def _estimate_tokens(messages: list[dict]) -> int:
-        """Rough token estimation: ~4 chars per token for English/code."""
-        total_chars = 0
+        """Estimate token count with CJK-aware character counting (#479).
+
+        CJK characters are ~1.5-2 chars/token; English/code is ~3.5-4 chars/token.
+        """
+        total_tokens = 0
         for m in messages:
-            total_chars += len(m.get("content", ""))
+            content = str(m.get("content", ""))
+            cjk = sum(1 for c in content if '\u4e00' <= c <= '\u9fff')
+            other = len(content) - cjk
+            total_tokens += cjk // 2 + other // 4
             for tc in m.get("tool_calls", []):
-                total_chars += len(str(tc.get("arguments", {})))
-        return total_chars // 4
+                arg_str = str(tc.get("arguments", {}))
+                cjk_a = sum(1 for c in arg_str if '\u4e00' <= c <= '\u9fff')
+                other_a = len(arg_str) - cjk_a
+                total_tokens += cjk_a // 2 + other_a // 4
+        return max(total_tokens, 1)
 
     def _truncate_messages(
         self, messages: list[dict], max_tokens: int
