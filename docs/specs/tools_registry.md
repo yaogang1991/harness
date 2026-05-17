@@ -6,6 +6,8 @@ Unified tool registry that provides built-in tools (read, write, edit, bash, glo
 
 Source: `tools/registry.py`
 
+Supporting module: `tools/command_runner.py` -- `ToolCommandRunner` protocol and `SyncSandboxAdapter` that wraps the async `SandboxProvider` into a synchronous command execution interface. Enables Docker sandbox integration without converting the entire tool chain to async.
+
 ---
 
 ## Public Interfaces
@@ -191,6 +193,7 @@ All errors are returned as `ToolResult(success=False, error=...)`. No exceptions
 | Dependency | Module | Usage |
 |---|---|---|
 | `ToolResult` | `core.models` | Unified return type for all tool executions. |
+| `ToolCommandRunner`, `SyncSandboxAdapter` | `tools.command_runner` | Sync command execution interface for sandbox integration. |
 | `subprocess` | stdlib | bash and git tool execution. |
 | `pathlib` | stdlib | Path resolution and manipulation. |
 

@@ -4,7 +4,7 @@
 
 Provides the job queue, run tracking, approval ticket system, execution service, and asynchronous worker that together form the control plane for the harness. Manages the full lifecycle of a job: submission, lease acquisition, DAG planning and execution, retry/dead-letter handling, approval gating for high-risk tool calls, and graceful worker shutdown.
 
-Sources: `control_plane/models.py`, `control_plane/repository.py`, `control_plane/service.py`, `control_plane/worker.py`, `control_plane/approval.py`, `control_plane/hooks.py`
+Sources: `control_plane/models.py`, `control_plane/repository.py`, `control_plane/service.py`, `control_plane/worker.py`, `control_plane/approval.py`, `control_plane/hooks.py`, `control_plane/execution_factory.py`, `control_plane/job_lifecycle.py`, `control_plane/run_lifecycle.py`, `control_plane/job_result.py`, `control_plane/backend_lifecycle.py`, `control_plane/worker_executor.py`, `control_plane/worker_recovery.py`
 
 ---
 
@@ -368,6 +368,36 @@ Module-level entry point:
 
 ---
 
+### execution_factory.py -- `ExecutionFactory`
+
+Builds the object graph for DAG execution: `IntelligentOrchestrator`, `DAGExecutionEngine`, `AgentPool`, `Guardrails`, `ToolRegistry`, `EvaluatorEngine`. Extracted from `RunService` for testability and separation of concerns.
+
+### job_lifecycle.py -- `JobLifecycleManager`
+
+Manages job lifecycle transitions: failure classification, retry/dead-letter decisions, approval resume/abort flows, job status queries and listing. Extracted from `RunService`.
+
+### run_lifecycle.py -- `RunLifecycleManager`
+
+Centralized Run status transitions: succeeded, failed, timed_out, canceled, pending_approval. Each method returns the updated `Run` so the caller can chain or return directly. Extracted from `RunService`.
+
+### job_result.py -- `JobResultWriter`
+
+Generates standardized `job_result.json` artifacts from `Job`/`Run`/summary data. Extracted from `RunService`.
+
+### backend_lifecycle.py -- `BackendLifecycleService`
+
+Manages the full backend lifecycle for a job run: resolve effective backend config, setup workspace via `BackendManager`, run project hooks (`after_create`/`before_run`/`after_run`/`before_remove`), cleanup/preserve workspace. Extracted from `RunService.run_job()`.
+
+### worker_executor.py
+
+Worker job execution and approval polling logic. Extracted from `TaskWorker` for maintainability. Handles the `_execute_job` flow, approval polling loop, and structured JSON logging.
+
+### worker_recovery.py
+
+Worker recovery logic: orphan job and pending ticket recovery at startup. Extracted from `TaskWorker` for maintainability. Handles `_recover_orphan_jobs()` and `_recover_pending_tickets()`.
+
+---
+
 ## Data Flow
 
 ```
@@ -450,6 +480,12 @@ Error categories used in `error_category` field: `""`, `"timeout"`, `"eval_faile
 | `EvaluatorEngine` | `evaluator.engine` | Quality gates. |
 | `BackendManager` | `backend.lifecycle` | Execution backend management. |
 | `ExecutionHook`, `ExecutionContext`, `MemoryHook`, `LearningHook`, `ImpactHook` | `control_plane.hooks` | Execution lifecycle hooks. |
+| `ExecutionFactory` | `control_plane.execution_factory` | Builds DAG execution object graph. |
+| `JobLifecycleManager` | `control_plane.job_lifecycle` | Job failure/retry/approval handling. |
+| `RunLifecycleManager` | `control_plane.run_lifecycle` | Run status transitions. |
+| `JobResultWriter` | `control_plane.job_result` | Job result artifact generation. |
+| `BackendLifecycleService` | `control_plane.backend_lifecycle` | Backend setup/cleanup lifecycle. |
+| `worker_executor`, `worker_recovery` | `control_plane.worker_executor`, `control_plane.worker_recovery` | Worker execution and recovery logic. |
 | `pydantic` | External | All data models. |
 
 ---

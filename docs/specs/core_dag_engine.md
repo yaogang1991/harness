@@ -2,7 +2,17 @@
 
 ## Purpose
 
-Executes a `DAG` plan by computing topological levels, running nodes at each level in parallel (bounded by `max_parallel`), handling failures via orchestrator callback, and supporting true replanning with a configurable limit. Includes a watchdog subsystem that monitors node health via heartbeats and kills unresponsive nodes.
+Executes a `DAG` plan by computing topological levels, running nodes at each level in parallel (bounded by `max_parallel`), handling failures via orchestrator callback, and supporting true replanning with a configurable limit. Delegates to extracted sub-modules for single-node execution, quality gating, retry policy, and watchdog monitoring.
+
+**Extracted sub-modules** (behavior-preserving extractions for testability):
+
+| Module | Purpose |
+|--------|---------|
+| `core/node_executor.py` | `NodeExecutor` -- single-node lifecycle: dependency skip, workspace isolation, agent execution, evaluation gate, retry, error classification |
+| `core/quality_gate.py` | `QualityGate` -- evaluator invocation, result interpretation, retry feedback generation, regression-aware restoration |
+| `core/retry_policy.py` | `RetryPolicyEngine` -- best-attempt tracking, score-based regression detection, lint regression detection, file snapshot capture/restore, exponential backoff |
+| `core/watchdog.py` | `WatchdogService` -- background heartbeat monitoring, per-agent-type interval/threshold overrides, alert thresholds for event noise reduction |
+| `core/artifact_handoff.py` | `ArtifactHandoffService` -- collect/structure handoff artifacts between DAG nodes (output artifacts, auto-eval results, retry feedback, soft dependency warnings) |
 
 ## Public Interfaces
 
@@ -183,6 +193,12 @@ No numeric error codes. Error handling:
 ## Dependencies
 
 - `core.models` -- `DAG`, `DAGNode`, `NodeStatus`, `NodeHealth`, `ExecutionEvent`, `FailureDecision`, `HandoffArtifact`
+- `core.node_executor` -- `NodeExecutor` (single-node execution lifecycle)
+- `core.quality_gate` -- `QualityGate` (evaluation and feedback)
+- `core.retry_policy` -- `RetryPolicyEngine` (best-attempt tracking, regression detection)
+- `core.watchdog` -- `WatchdogService` (heartbeat monitoring)
+- `core.artifact_handoff` -- `ArtifactHandoffService` (handoff artifact collection)
+- `core.exceptions` -- `PendingApprovalError` (approval flow)
 - Python stdlib: `asyncio`, `logging`, `traceback`, `datetime`, `typing`
 
 ## Configuration

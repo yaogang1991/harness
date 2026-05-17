@@ -8,7 +8,7 @@ Self-hosted unattended software development harness based on [Anthropic Managed 
 
 Python 3.11+, Pydantic models, async/await throughout.
 
-**Current version:** M2 — Single-user high-reliability autonomy. See `docs/roadmap.md` for milestone history.
+**Current version:** M3.5 + Refactoring (domain module splits). See `docs/roadmap.md` for milestone history.
 
 ## Commands
 
@@ -37,6 +37,9 @@ python main.py status <job_id>
 python main.py list --status running
 python main.py cancel <job_id>
 
+# Recover orphaned jobs
+python main.py recover
+
 # Approval tickets (M1.1)
 python main.py tickets
 python main.py approve <ticket_id>
@@ -50,6 +53,10 @@ python main.py templates
 python main.py templates --name build_api
 python main.py run "Build API" --template build_api --var feature=Todo --var language=Python
 python main.py plan "Fix bug" --template fix_bug --var bug="null pointer"
+
+# Skills (M3.6)
+python main.py skills
+python main.py skill review_code --var file=src/main.py
 
 # Impact analysis (M3.5)
 python main.py impact-predict "Fix bug in DAG engine" --project .
@@ -82,35 +89,103 @@ Session Manager (append-only JSONL event log, state replay)
     ↓
 Harness Core / Dumb Loop (Agent Worker + Tool Registry + Guardrails)
     ↓
-Execution Layer (Backend abstraction, Git, Reporter)
+Execution Layer (Backend abstraction, Sandbox, Git, Reporter)
 ```
 
 **Flow**: User requirement → `IntelligentOrchestrator.plan()` queries `AgentRegistry`, generates a `DAG` → `DAGExecutionEngine` topologically sorts and executes levels in parallel via `AgentPool` → Watchdog monitors heartbeats (M2) → failures go back to orchestrator via `adapt_to_failure()`.
 
 **Key module responsibilities**:
-- `core/models.py` — All data models: DAG, DAGNode, AgentCapability, HandoffArtifact, events, session state, guardrails, NodeHealth, MemoryEntry, MemoryScope, MemoryType, LearningInsight
-- `core/config.py` — HarnessConfig, LLMConfig, SandboxConfig, MemoryConfig, LearningConfig
+
+### core/ — Models, configuration, engine
+- `core/models.py` — Base re-exports; domain models live in split files below
+- `core/dag_models.py` — DAG, DAGNode, DAGEdge, DAGTemplate models
+- `core/event_models.py` — Event types, session state, EventType enum
+- `core/guardrail_models.py` — RiskLevel, PermissionMode, GuardrailConfig
+- `core/memory_models.py` — MemoryEntry, MemoryScope, MemoryType
+- `core/analysis_models.py` — ImpactRiskLevel, ImpactScope, VerificationResult
+- `core/eval_models.py` — SuccessCriterion, EvaluationResult
+- `core/tool_models.py` — ToolInfo, ToolResult, MCPToolInfo
+- `core/mcp_models.py` — MCPToolInfo, MCPServerStatus
+- `core/artifact_handoff.py` — HandoffArtifact, artifact collection/transfer
+- `core/exceptions.py` — Custom exception hierarchy
+- `core/config.py` — HarnessConfig, LLMConfig, SandboxConfig, MemoryConfig, LearningConfig, ImpactConfig
 - `core/agent_registry.py` — Agent capability registry (defaults: planner/generator/evaluator; extensible via `.harness/agents.yaml`)
-- `core/dag_engine.py` — Topological sort, parallel execution with `asyncio.gather`, failure callback, Watchdog coroutine (M2)
+- `core/dag_engine.py` — Topological sort, parallel execution with `asyncio.gather`, failure callback
+- `core/node_executor.py` — Single node execution logic (extracted from dag_engine)
+- `core/quality_gate.py` — Post-node quality checks (extracted from dag_engine)
+- `core/retry_policy.py` — Retry/backoff logic (extracted from dag_engine)
+- `core/watchdog.py` — Watchdog coroutine for heartbeat monitoring (M2)
 - `core/llm_client.py` — Unified LLM client (Anthropic/OpenAI)
-- `orchestrator/intelligent_orchestrator.py` — LLM-driven planning and failure adaptation
-- `agent/agent_pool.py` — Worker instance pool with independent contexts
-- `agent/worker.py` — Single agent LLM call loop
-- `tools/registry.py` — Built-in tools (read/write/edit/bash/glob/grep/git) + MCP extension point
-- `guardrails/policy.py` — Four-layer defense: RiskLevel, PermissionMode (plan/default/accept_edits/auto/dont_ask), unified 3-state entry (M1.1)
-- `session/store.py` — Append-only JSONL event storage, state recovery via replay
-- `evaluator/engine.py` — Automated success criteria checking (pytest, flake8, coverage)
+- `core/llm_router.py` — M3.1: Multi-model routing per agent type
+- `core/project_config.py` — `.harness/config.yaml` loader (runtime parameters, hooks, guardrails)
+
+### cli/ — CLI command handlers (split from main.py)
+- `cli/__init__.py` — Exports all cmd_* functions
+- `cli/execution.py` — plan, execute, run, viz commands
+- `cli/jobs.py` — submit, status, list, cancel, worker, recover, console commands
+- `cli/approval.py` — tickets, approve, reject commands
+- `cli/memory.py` — memory-search/list/stats/add/cleanup commands
+- `cli/learning.py` — learning-analyze/insights/status commands
+- `cli/impact.py` — impact-predict/graph/history commands
+- `cli/skills.py` — skills, skill, templates commands
+- `cli/utils.py` — Shared CLI helpers
+
+### control_plane/ — Job lifecycle management
 - `control_plane/models.py` — Job/Run data models, status enums
 - `control_plane/repository.py` — Persistent storage with atomic writes
-- `control_plane/service.py` — Execution service (submit/run/resume), hooks-driven lifecycle
+- `control_plane/service.py` — RunService: execution orchestration (submit/run/resume)
 - `control_plane/hooks.py` — Execution hooks: MemoryHook, LearningHook, ImpactHook (lifecycle callbacks)
+- `control_plane/execution_factory.py` — Factory for creating orchestrator + engine per run
+- `control_plane/job_lifecycle.py` — Job state transitions and lifecycle management
+- `control_plane/run_lifecycle.py` — Run state transitions
+- `control_plane/job_result.py` — Job result aggregation
+- `control_plane/backend_lifecycle.py` — Backend setup/cleanup integration
 - `control_plane/worker.py` — Worker queue consumer with lease mechanism
+- `control_plane/worker_executor.py` — Single job execution within worker (extracted from worker)
+- `control_plane/worker_recovery.py` — Orphaned job recovery logic (extracted from worker)
 - `control_plane/approval.py` — Approval ticket system (M1.1): ApprovalTicket, ApprovalRepository
-- `backend/base.py` — ExecutionBackend abstract interface (M2)
+
+### orchestrator/ — LLM-driven planning
+- `orchestrator/intelligent_orchestrator.py` — LLM-driven planning and failure adaptation
+- `orchestrator/plan_validator.py` — DAG structural validation and auto-fix
+- `orchestrator/llm_utils.py` — LLM helper utilities (token counting, message pruning)
+- `orchestrator/prompts/` — Prompt templates (planning.md, adaptation.md, replan.md)
+
+### agent/ — LLM agent layer
+- `agent/agent_pool.py` — Worker instance pool with independent contexts, memory injection
+- `agent/worker.py` — Single agent LLM call loop
+- `agent/prompts.py` — Agent system prompts
+
+### evaluator/ — Automated evaluation
+- `evaluator/engine.py` — Evaluation orchestration
+- `evaluator/runner.py` — Test/lint execution runner
+- `evaluator/models.py` — Evaluator-specific models
+- `evaluator/artifact.py` — Artifact evaluation
+- `evaluator/compat.py` — Backward compatibility shims
+- `evaluator/checkers/` — Criterion checkers (base, file_exists, bugfix_patterns)
+- `evaluator/lint/` — Lint result parsing
+
+### tools/ — Built-in tools
+- `tools/registry.py` — Tool registration (read/write/edit/bash/glob/grep/git) + MCP extension point
+- `tools/command_runner.py` — Shell command execution with sandbox support
+
+### backend/ — Execution environment abstraction
+- `backend/base.py` — ExecutionBackend abstract interface, WorkspaceIsolation, ExecutionSandbox enums
 - `backend/local.py` — Local execution backend
 - `backend/worktree.py` — Git worktree isolation backend
 - `backend/docker_stub.py` — Docker backend stub (reserved)
+- `backend/sandbox.py` — SandboxProvider / LocalSandbox / DockerSandbox (orthogonal to workspace)
 - `backend/lifecycle.py` — BackendManager: config-driven selection, risk mapping, auto-fallback
+
+### mcp/ — Model Context Protocol
+- `mcp/client.py` — MCP server connection, tool discovery, and execution via stdio transport
+
+### skills/ — YAML skill definitions
+- `skills/registry.py` — SkillRegistry: discover, load, instantiate YAML skills with variable substitution
+
+### Other modules
+- `guardrails/policy.py` — Four-layer defense: RiskLevel, PermissionMode (plan/default/accept_edits/auto/dont_ask), unified 3-state entry (M1.1)
+- `session/store.py` — Append-only JSONL event storage, state recovery via replay, session snapshots
 - `monitoring/metrics.py` — Metrics aggregation
 - `monitoring/alerts.py` — Alerting system (failure, heartbeat, approval)
 - `memory/store.py` — M3.2: Persistent memory store with atomic writes (file-per-entry)
@@ -123,26 +198,29 @@ Execution Layer (Backend abstraction, Git, Reporter)
 - `analysis/dependency_graph.py` — M3.5: File-level dependency graph using Python ast import parsing
 - `analysis/impact_predictor.py` — M3.5: Impact prediction engine (keyword matching + dependency expansion)
 - `analysis/change_verifier.py` — M3.5: Post-execution change verification with coverage metrics
-- `orchestrator/plan_validator.py` — DAG structural validation and auto-fix
 - `visualizer/server.py` — FastAPI web console (M2.3)
 - `visualizer/cli_renderer.py` — CLI DAG visualization
 - `visualizer/event_bridge.py` — WebSocket event bridge
+- `reporter/logger.py` — Session report generation
 
 ## Conventions
 
 - **Language**: Docstrings and code comments in English. User-facing docs (README, ARCHITECTURE) in Chinese.
 - **Type annotations**: Use Python 3.10+ syntax (`str | None`, `list[dict[str, Any]]`).
-- **Data models**: All must use `pydantic.BaseModel` with `model_dump()` serialization. Defined in `core/models.py`.
+- **Data models**: Use `pydantic.BaseModel` with `model_dump()` serialization. Domain models in `core/*_models.py` files, re-exported via `core/models.py`.
 - **Event naming**: `{domain}.{action}` convention (e.g., `workflow.stage_start`, `agent.tool_use`, `node.heartbeat`).
 - **Error handling**: Tools return `ToolResult` wrapper (success/failure), never throw exceptions that break the main loop. DAG engine catches exceptions via `traceback.format_exc()` and writes to node `error` field.
 - **No circular imports**: Modules layered by responsibility (`core/` → `agent/` → `orchestrator/` → `tools/`).
+- **Immutability**: All state mutations create new objects. Never mutate shared state in-place.
 
 ## When Modifying Code
 
 - **Adding a tool**: Register in `tools/registry.py`, add risk level in `guardrails/policy.py` `RISK_MAP`.
-- **Adding a default agent type**: Add to `core/agent_registry.py` `_register_defaults()`, update prompt template in `orchestrator/intelligent_orchestrator.py`.
-- **Data model changes**: Edit `core/models.py` — it is the single source of truth for all models.
+- **Adding a default agent type**: Add to `core/agent_registry.py` `_register_defaults()`, update prompt in `agent/prompts.py`, update orchestrator prompt in `orchestrator/prompts/planning.md`.
+- **Data model changes**: Add to the appropriate `core/*_models.py` file. Re-export from `core/models.py` for backward compatibility.
 - **Adding an execution backend**: Extend `backend/base.py` `ExecutionBackend`, register in `backend/lifecycle.py` `BackendManager`.
+- **Adding an execution hook**: Extend `ExecutionHook` in `control_plane/hooks.py`, register in `control_plane/service.py` `_register_hooks()`.
+- **Adding a CLI command**: Add handler in `cli/` subdirectory, register subparser in `main.py`.
 - **State is externalized**: All runtime state lives in `./data/events/` (JSONL) and `./data/artifacts/`. Agent context windows are just cache.
 - **Memory system**: `memory/store.py` handles persistence (atomic writes), `memory/manager.py` is the primary API. Memory is injected into agent system prompts via `memory_manager.get_context_for_agent()` + `format_memory_prompt()` in `agent/agent_pool.py`.
 
@@ -155,3 +233,5 @@ Execution Layer (Backend abstraction, Git, Reporter)
 - `./data/queue/` — Job queue (pending/leased/dead)
 - `./data/memory/` — M3.2: Agent memory entries (global/agents/{type}/sessions/{id}/)
 - `./data/impact/` — M3.5: Impact analysis data
+- `./data/backends/` — M2: Backend data (worktrees, etc.)
+- `./data/learning/` — M3.3: Learning analysis state

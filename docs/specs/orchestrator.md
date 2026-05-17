@@ -6,6 +6,14 @@ LLM-driven orchestrator that generates execution DAGs from user requirements, ad
 
 Source: `orchestrator/intelligent_orchestrator.py`
 
+Supporting modules:
+- `orchestrator/llm_utils.py` -- Token/size management and JSON extraction utilities
+- `orchestrator/plan_validator.py` -- DAG structural validation and auto-fix
+- `orchestrator/prompts/` -- Prompt templates as markdown files:
+  - `planning.md` -- Initial DAG generation prompt
+  - `adaptation.md` -- Failure decision prompt
+  - `replan.md` -- Replanning after partial execution prompt
+
 ---
 
 ## Public Interfaces
@@ -58,7 +66,7 @@ Converts an `OrchestratorPlan` model into an executable `DAG`. Each node definit
 
 #### `_extract_json(text: str) -> dict`
 
-Extract JSON from LLM response text. Three strategies:
+Extract JSON from LLM response text (utility function from `orchestrator/llm_utils.py`). Three strategies:
 1. Extract from `` ```json ... ``` `` code block.
 2. Extract from generic `` ``` ... ``` `` code block.
 3. Brace-matching scan for first top-level `{...}` object.
@@ -136,6 +144,8 @@ User requirement string
 | `LLMConfig` | `core.config` | LLM configuration. |
 | `LLMClient` | `core.llm_client` | Synchronous LLM API calls. |
 | `SessionStore` | `session.store` | Event logging. |
+| `llm_utils` | `orchestrator.llm_utils` | Token counting, JSON extraction, model context window management. |
+| `plan_validator` | `orchestrator.plan_validator` | DAG structural validation and auto-fix. |
 
 ---
 

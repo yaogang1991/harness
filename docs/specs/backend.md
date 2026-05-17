@@ -4,7 +4,7 @@
 
 Provides the execution backend abstraction layer. Each backend type (local, worktree, docker) implements a common lifecycle interface for preparing an execution environment, returning a working directory, and cleaning up or preserving the workspace after execution. The `BackendManager` selects backends based on configuration or risk level and manages their lifecycle.
 
-Sources: `backend/base.py`, `backend/local.py`, `backend/worktree.py`, `backend/docker_stub.py`, `backend/lifecycle.py`
+Sources: `backend/base.py`, `backend/local.py`, `backend/worktree.py`, `backend/docker_stub.py`, `backend/lifecycle.py`, `backend/sandbox.py`
 
 ---
 
@@ -117,6 +117,37 @@ This is a placeholder for future container-based isolation.
 
 ---
 
+### sandbox.py -- Sandbox Providers
+
+Controls where agent processes run -- the second orthogonal dimension of isolation (workspace isolation is the first). Sandbox providers determine the execution environment: host process, Docker container, or future VM.
+
+**Note:** Hooks are NOT executed through `SandboxProvider`. Hooks run as subprocess on the host, because they are operational scripts (npm install, pytest) that need access to the host.
+
+#### Data class: `CommandResult`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `success` | `bool` | required | Whether command succeeded |
+| `exit_code` | `int` | `0` | Process exit code |
+| `stdout` | `str` | `""` | Standard output |
+| `stderr` | `str` | `""` | Standard error |
+| `duration_ms` | `int` | `0` | Execution duration |
+
+#### Abstract class: `SandboxProvider(abc.ABC)`
+
+```python
+class SandboxProvider(abc.ABC):
+    sandbox_type: ExecutionSandbox
+
+    async def run_command(self, command: str, ...) -> CommandResult
+    async def setup(self) -> None
+    async def teardown(self) -> None
+```
+
+Extension point for Docker/VM sandbox integration. The `tools/command_runner.py` module provides a `SyncSandboxAdapter` that wraps the async `SandboxProvider` for use in synchronous tool execution.
+
+---
+
 ### lifecycle.py -- `BackendManager`
 
 ```python
@@ -208,6 +239,7 @@ BackendManager.setup(job_id, run_id, risk_level)
 | `shutil` | stdlib | Directory removal and move operations. |
 | `pathlib.Path` | stdlib | Path handling throughout. |
 | `datetime` | stdlib | Timestamps in `.PRESERVED` marker. |
+| `SandboxProvider`, `CommandResult` | `backend.sandbox` | Sandbox execution abstraction. |
 
 No external dependencies.
 
@@ -227,7 +259,8 @@ No external dependencies.
 ## Extension Points
 
 1. **Docker backend**: Implement `DockerBackend` methods for container-based isolation (planned for M3).
-2. **Custom backends**: Subclass `ExecutionBackend`, register a new `BackendType` enum value, and add instantiation logic in `BackendManager._get_backend`.
+2. **Sandbox providers**: Implement `SandboxProvider` for Docker/VM execution; wire through `ToolCommandRunner`/`SyncSandboxAdapter`.
+3. **Custom backends**: Subclass `ExecutionBackend`, register a new `BackendType` enum value, and add instantiation logic in `BackendManager._get_backend`.
 3. **Risk-backend mapping**: Override `risk_backend_map` to change which risk levels trigger which backends.
 4. **Preservation strategy**: Override `preserve()` in a backend subclass to implement custom debugging-scene preservation (e.g., tarball, snapshot).
 

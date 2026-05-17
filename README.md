@@ -96,11 +96,14 @@ python main.py worker --non-interactive
 | `worker [--concurrency N]` | Start Worker |
 | `plan "<requirement>"` | Generate execution plan |
 | `run "<requirement>"` | One-command plan + execute |
+| `recover` | Recover orphaned jobs |
 | `run "..." --template build_api` | Run from template (M3.4) |
+| `skill <name> [--var K=V]` | Invoke a skill (M3.6) |
 | `tickets` / `approve` / `reject` | Approval workflow |
 | `memory-search` / `memory-add` | Agent memory (M3.2) |
 | `learning-analyze` / `learning-insights` | Self-learning (M3.3) |
 | `impact-predict` / `impact-graph` | Impact analysis (M3.5) |
+| `skills` | List available skills |
 
 ## M3 Features
 
@@ -139,6 +142,18 @@ python main.py impact-predict "Refactor the DAG engine" --project .
 python main.py impact-graph --project .
 ```
 
+### Skills (M3.6)
+
+```bash
+# List available skills
+python main.py skills
+
+# Invoke a skill
+python main.py skill review_code --var file=src/main.py
+```
+
+Skills are YAML-based prompt templates in `.harness/skills/` with variable substitution, similar to DAG templates but for single-agent invocations.
+
 ## Security Model
 
 | Layer | Component | Function |
@@ -152,21 +167,24 @@ python main.py impact-graph --project .
 
 | Module | Responsibility |
 |--------|---------------|
-| `core/` | Pydantic models, configuration management |
+| `core/` | Domain models (`*_models.py`), configuration, DAG engine, LLM client/router, watchdog |
+| `cli/` | CLI command handlers (split from main.py) |
 | `session/` | Event storage, state recovery, checkpoint |
-| `agent/` | LLM API calls, dumb loop |
-| `tools/` | Built-in tools + MCP integration |
+| `agent/` | LLM API calls, agent pool, system prompts |
+| `tools/` | Built-in tools + command runner + MCP integration |
 | `guardrails/` | Risk classification, permission control |
-| `evaluator/` | Automated evaluation, test execution |
-| `orchestrator/` | Workflow orchestration, Stage transitions |
+| `evaluator/` | Automated evaluation (checkers, lint, runner) |
+| `orchestrator/` | Workflow orchestration, plan validation, prompts |
 | `reporter/` | Audit logs, report generation |
 | `memory/` | M3.2: Agent memory (store, retrieve, share) |
 | `learning/` | M3.3: Execution pattern analysis and optimization |
 | `templates/` | M3.4: Reusable DAG templates (YAML + variables) |
 | `analysis/` | M3.5: Dependency graph, impact prediction, change verification |
 | `visualizer/` | M2.3: Web console (FastAPI + WebSocket) |
-| `backend/` | M2: Execution backend abstraction (local/worktree) |
-| `control_plane/` | Job queue, worker, approval tickets |
+| `backend/` | M2: Execution backend (local/worktree) + sandbox providers |
+| `control_plane/` | Job queue, worker, execution hooks, approval tickets |
+| `mcp/` | Model Context Protocol client (stdio transport) |
+| `skills/` | M3.6: YAML skill definitions with variable substitution |
 
 ## Relationship with Anthropic Managed Agents
 

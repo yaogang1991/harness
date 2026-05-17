@@ -4,7 +4,9 @@
 
 Manages a pool of independent worker agent instances. Each worker receives isolated LLM context, a filtered tool set based on its agent type, and optional guardrails enforcement on every tool call. The pool creates agents on demand and provides a callable executor interface for the DAG engine.
 
-Sources: `agent/agent_pool.py`, `agent/worker.py`
+Sources: `agent/agent_pool.py`, `agent/worker.py`, `agent/prompts.py`
+
+`agent/prompts.py` contains the extracted `SYSTEM_PROMPTS` and `TOOL_ALLOWLIST` dictionaries (previously class constants on `WorkerAgent`). This separation keeps prompt text out of the agent pool logic for maintainability.
 
 ---
 
@@ -41,10 +43,10 @@ class WorkerAgent:
 
 #### Class constants
 
-| Constant | Type | Description |
-|---|---|---|
-| `SYSTEM_PROMPTS` | `dict[str, str]` | Built-in system prompts for `planner`, `generator`, `evaluator`. |
-| `TOOL_ALLOWLIST` | `dict[str, set[str]]` | Tool names permitted per agent type. |
+| Constant | Type | Source | Description |
+|---|---|---|---|
+| `SYSTEM_PROMPTS` | `dict[str, str]` | `agent/prompts.py` | Built-in system prompts for `planner`, `generator`, `evaluator`. |
+| `TOOL_ALLOWLIST` | `dict[str, set[str]]` | `agent/prompts.py` | Tool names permitted per agent type. |
 
 **Tool allowlist mapping:**
 - `planner`: `{"read", "glob", "grep"}`
@@ -216,6 +218,7 @@ executor(node, artifacts)  [async callable]
 | `AgentRegistry` | `core.agent_registry` | Agent type discovery. |
 | `SessionStore` | `session.store` | Event logging. |
 | `AgentWorker` | `agent.worker` | Low-level agent loop. |
+| `SYSTEM_PROMPTS`, `TOOL_ALLOWLIST` | `agent.prompts` | System prompts and tool allowlists (extracted from agent_pool). |
 | `ToolRegistry` | `tools.registry` | Tool execution. |
 | `Guardrails` | `guardrails.policy` | Permission enforcement. |
 

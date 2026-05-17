@@ -241,7 +241,7 @@ config = HarnessConfig(llm=LLMConfig(model="gpt-4", provider="openai"))
 | `list` | — | `--status` | List jobs |
 | `cancel` | `job_id` | — | Cancel a job |
 | `worker` | — | `--concurrency`, `--poll-interval`, `--non-interactive` | Start worker process |
-| `recover` | — | — | Recover orphaned jobs |
+| `recover` | — | — | Recover orphaned jobs after restart |
 | `console` | — | `--host`, `--port` | Launch web console |
 
 ### Approval Commands (M1.1)
@@ -290,6 +290,13 @@ python main.py plan "Fix bug" --template fix_bug --var bug="null pointer"
 | `impact-predict` | `requirement` | `--project` | Predict impact of a requirement |
 | `impact-graph` | — | `--project` | Show project dependency graph |
 | `impact-history` | — | `--limit` | List past impact predictions |
+
+### Skills Commands (M3.6)
+
+| Command | Arguments | Options | Description |
+|---------|-----------|---------|-------------|
+| `skills` | — | `--agent`, `--project` | List available skills |
+| `skill` | `name` | `--var`, `--project`, `--max-parallel`, `--max-iterations` | Invoke a skill (creates plan+run) |
 
 ---
 

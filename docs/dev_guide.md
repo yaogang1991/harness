@@ -34,7 +34,7 @@ agents:
 
 ### 2. Add system prompt
 
-Edit `agent/agent_pool.py` — add entry to `SYSTEM_PROMPTS` dict:
+Edit `agent/prompts.py` — add entry to `SYSTEM_PROMPTS` dict:
 
 ```python
 SYSTEM_PROMPTS = {
@@ -50,7 +50,7 @@ SYSTEM_PROMPTS = {
 
 ### 3. Update orchestrator prompt
 
-The orchestrator automatically discovers agents via `AgentRegistry.to_prompt_description()`, but you may want to add planning rules in `orchestrator/intelligent_orchestrator.py`:
+The orchestrator automatically discovers agents via `AgentRegistry.to_prompt_description()`, but you may want to add planning rules in `orchestrator/prompts/planning.md`:
 
 ```python
 # In the planning prompt template, add guidance:
@@ -245,7 +245,8 @@ Status transitions are strict — illegal moves raise `ValueError`. Always use t
 
 ## Project Structure Conventions
 
-- **Data models**: All in `core/models.py` (single source of truth)
+- **Data models**: Domain-specific files in `core/*_models.py`, unified re-export via `core/models.py`
+- **CLI commands**: Domain-specific handlers in `cli/` subdirectory, registered in `main.py`
 - **Event naming**: `{domain}.{action}` (e.g., `workflow.stage_start`, `node.heartbeat`)
 - **Type annotations**: Python 3.10+ syntax (`str | None`, `list[dict]`)
 - **Docstrings**: English, Google-style

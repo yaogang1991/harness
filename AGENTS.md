@@ -33,33 +33,116 @@
 ```
 weave/
 ├── core/                          # 核心模型与引擎
-│   ├── models.py                  # 所有 Pydantic 数据模型（DAG、Event、Session、Guardrail 等）
-│   ├── config.py                  # 配置管理（HarnessConfig、LLMConfig、SandboxConfig、MCPConfig）
-│   ├── agent_registry.py          # Agent 能力注册表（默认 planner/generator/evaluator + 项目自定义）
-│   ├── llm_client.py              # 统一 LLM 客户端（Anthropic / OpenAI）
-│   └── dag_engine.py              # DAG 拓扑调度与并行执行引擎
+│   ├── models.py                  # 统一重导出（领域模型拆分到 *_models.py）
+│   ├── dag_models.py              # DAG 相关模型
+│   ├── event_models.py            # 事件与 Session 模型
+│   ├── guardrail_models.py        # Guardrail 模型
+│   ├── memory_models.py           # 记忆模型
+│   ├── analysis_models.py         # 影响分析模型
+│   ├── eval_models.py             # 评估模型
+│   ├── tool_models.py             # 工具模型
+│   ├── mcp_models.py              # MCP 模型
+│   ├── artifact_handoff.py        # HandoffArtifact 交接
+│   ├── exceptions.py              # 自定义异常
+│   ├── config.py                  # 配置管理
+│   ├── agent_registry.py          # Agent 能力注册表
+│   ├── llm_client.py              # 统一 LLM 客户端
+│   ├── llm_router.py              # 多模型路由
+│   ├── dag_engine.py              # DAG 引擎
+│   ├── node_executor.py           # 单节点执行
+│   ├── quality_gate.py            # 质量检查
+│   ├── retry_policy.py            # 重试策略
+│   ├── watchdog.py                # 心跳监控
+│   └── project_config.py          # 项目配置加载
+├── cli/                           # CLI 命令（从 main.py 拆分）
+│   ├── execution.py               # plan/execute/run/viz
+│   ├── jobs.py                    # submit/status/list/cancel/worker/recover
+│   ├── approval.py                # tickets/approve/reject
+│   ├── memory.py                  # memory-search/list/stats/add/cleanup
+│   ├── learning.py                # learning-analyze/insights/status
+│   ├── impact.py                  # impact-predict/graph/history
+│   ├── skills.py                  # skills/skill/templates
+│   └── utils.py                   # 共享工具
 ├── agent/                         # Agent Worker 层
 │   ├── worker.py                  # 单 Agent LLM 调用循环
-│   └── agent_pool.py              # Agent 实例池（独立上下文、延迟创建）
+│   ├── agent_pool.py              # Agent 实例池（独立上下文、记忆注入/提取）
+│   └── prompts.py                 # Agent system prompts
 ├── orchestrator/                  # 编排层
-│   └── intelligent_orchestrator.py # 智能编排 Agent（LLM 驱动规划与失败处理）
+│   ├── intelligent_orchestrator.py # 智能编排 Agent
+│   ├── plan_validator.py          # DAG 验证与自动修复
+│   ├── llm_utils.py               # LLM 工具函数
+│   └── prompts/                   # Prompt 模板 (planning/adaptation/replan)
+├── control_plane/                 # 任务控制面
+│   ├── models.py                  # Job/Run 数据模型
+│   ├── repository.py              # 持久化存储
+│   ├── service.py                 # RunService
+│   ├── hooks.py                   # Execution Hooks
+│   ├── execution_factory.py       # 编排器+引擎工厂
+│   ├── job_lifecycle.py           # Job 状态管理
+│   ├── run_lifecycle.py           # Run 状态管理
+│   ├── worker.py                  # Worker 队列消费者
+│   ├── worker_executor.py         # Worker 内 Job 执行
+│   ├── worker_recovery.py         # 孤儿 Job 恢复
+│   └── approval.py                # 审批票据
 ├── tools/                         # 工具层
-│   └── registry.py                # 工具注册表（read/write/edit/bash/glob/grep/git + MCP 扩展位）
+│   ├── registry.py                # 工具注册表
+│   └── command_runner.py          # 命令执行
 ├── guardrails/                    # 安全与权限
-│   └── policy.py                  # 四层防御策略（RiskLevel、PermissionMode、Guardrails）
+│   └── policy.py                  # 四层防御策略
 ├── evaluator/                     # 自动化评估
-│   └── engine.py                  # 成功标准检查器（pytest、flake8/ruff、coverage、文件存在性）
+│   ├── engine.py                  # 评估编排
+│   ├── runner.py                  # 测试/lint 执行器
+│   ├── models.py                  # 评估模型
+│   ├── artifact.py                # Artifact 评估
+│   ├── checkers/                  # 条件检查器
+│   └── lint/                      # Lint 解析
+├── backend/                       # 执行后端
+│   ├── base.py                    # 抽象接口
+│   ├── local.py                   # 本地执行
+│   ├── worktree.py                # Git worktree 隔离
+│   ├── sandbox.py                 # SandboxProvider
+│   ├── docker_stub.py             # Docker stub
+│   └── lifecycle.py               # BackendManager
+├── mcp/                           # Model Context Protocol
+│   └── client.py                  # MCP 客户端
+├── skills/                        # 技能系统
+│   └── registry.py                # SkillRegistry
 ├── session/                       # 状态持久化
-│   └── store.py                   # 追加式 JSONL 事件存储与状态恢复
-├── reporter/                      # 报告与审计
-│   └── logger.py                  # Session Markdown 报告生成器
-├── projects/                      # 项目自定义 Agent 示例
-│   └── example/
-│       └── agents.yaml            # 自定义 Agent 配置样例（ui_designer/db_admin/security_auditor）
+│   └── store.py                   # JSONL 事件存储 + snapshot
+├── memory/                        # Agent 记忆
+│   ├── store.py                   # 持久化存储
+│   ├── manager.py                 # 高层 API
+│   └── sharing.py                 # 跨 Agent 共享
+├── learning/                      # 自学习
+│   ├── analyzer.py                # 模式分析
+│   ├── optimizer.py               # 洞察转换
+│   └── scheduler.py               # 定期调度
+├── templates/                     # DAG 模板
+│   ├── library.py                 # TemplateRegistry
+│   └── *.yaml                     # 7 个内置模板
+├── analysis/                      # 影响分析
+│   ├── dependency_graph.py
+│   ├── impact_predictor.py
+│   └── change_verifier.py
+├── monitoring/                    # 监控
+│   ├── metrics.py
+│   └── alerts.py
+├── visualizer/                    # Web 控制台
+│   ├── server.py
+│   ├── cli_renderer.py
+│   ├── event_bridge.py
+│   └── static/
+├── reporter/
+│   └── logger.py
+├── projects/
+│   └── example/agents.yaml
+├── docs/
+├── tests/
 ├── main.py                        # CLI 入口
-├── requirements.txt               # 依赖列表
-├── README.md                      # 面向人类的项目说明（中文）
-└── ARCHITECTURE.md                # 架构设计文档（中文）
+├── README.md                      # 面向用户说明（中文）
+├── ARCHITECTURE.md                # 架构设计（中文）
+├── CONTRIBUTING.md                # 贡献指南
+└── CLAUDE.md                      # Claude Code 指引
 ```
 
 ---
@@ -121,8 +204,9 @@ agents:
 3. **模型层**：所有数据模型必须使用 `pydantic.BaseModel`，支持 `model_dump()` 序列化。
 4. **事件命名**：遵循 Anthropic 的 `{domain}.{action}` 约定，如 `workflow.stage_start`、`agent.tool_use`。
 5. **文件组织**：
-   - 按职责分层（`core/`, `agent/`, `orchestrator/`, `tools/` 等），禁止循环导入。
-   - 所有数据模型统一在 `core/models.py`。
+   - 按职责分层（`core/`, `cli/`, `agent/`, `orchestrator/`, `tools/` 等），禁止循环导入。
+   - 数据模型按领域拆分到 `core/*_models.py`，统一通过 `core/models.py` 重导出。
+   - CLI 命令处理器拆分到 `cli/` 子模块。
    - 入口文件 `main.py` 通过 `sys.path.insert(0, str(Path(__file__).parent))` 自引用项目根目录。
 6. **错误处理**：
    - 工具层返回 `ToolResult` 封装成功/失败，避免抛异常中断主循环。
@@ -189,16 +273,24 @@ Guardrails（`guardrails/policy.py`）实现四层防御：
   - `./data/artifacts/` — 各 Session 的产物文件
   - `./data/reports/` — Markdown 报告
   - `./data/plans/` — 生成的 DAG 计划（JSON）
+  - `./data/jobs/` — Job 存储（含 dead_letter）
+  - `./data/backends/` — 后端数据（worktrees）
+  - `./data/memory/` — Agent 记忆
+  - `./data/learning/` — 学习分析状态
+  - `./data/impact/` — 影响分析数据
 - 如需生产部署，建议：
   - 将 `data/` 挂载到持久化卷。
-  - 为 Sandbox 启用 Docker 运行时（当前配置中 `SandboxConfig.runtime` 默认 `"docker"`，但 `tools/registry.py` 中的 `bash` 工具当前直接调用 `subprocess.run`）。
+  - 为 Sandbox 启用 Docker 运行时（`SandboxConfig.runtime` 可配置为 `docker`/`bubblewrap`/`direct`）。
 
 ---
 
 ## 对 Agent 的提示
 
-- 修改数据模型时，编辑 `core/models.py`（唯一的模型源文件）。
+- 修改数据模型时，编辑对应的 `core/*_models.py` 文件（如 `dag_models.py`、`event_models.py`），并确保在 `core/models.py` 中重导出。
 - 修改编排相关代码时，注意 `dag_engine.py`、`intelligent_orchestrator.py` 和 `agent_pool.py` 的联动。
+- 修改 CLI 时，编辑 `cli/` 下对应的命令模块。
 - 如需新增工具，在 `tools/registry.py` 中注册，并在 `guardrails/policy.py` 的 `RISK_MAP` 中标注风险等级。
-- 如需新增默认 Agent 类型，在 `core/agent_registry.py` 的 `_register_defaults()` 中添加，并同步更新 `orchestrator/intelligent_orchestrator.py` 的 prompt 模板中的规划规则。
+- 如需新增默认 Agent 类型，在 `core/agent_registry.py` 的 `_register_defaults()` 中添加，并同步更新 `agent/prompts.py` 和 `orchestrator/prompts/planning.md`。
+- 如需新增 Execution Hook，继承 `control_plane/hooks.py` 的 `ExecutionHook`，并在 `control_plane/service.py` 的 `_register_hooks()` 中注册。
+- 如需新增 CLI 命令，在 `cli/` 下添加处理函数，并在 `main.py` 中注册 subparser。
 - 本项目文档以**中文**为主（`README.md`、`ARCHITECTURE.md`），但代码注释和文档字符串以**英文**为主。修改代码时保持这一惯例：文档字符串用英文，面向用户的消息/日志可保留中文或英文。
