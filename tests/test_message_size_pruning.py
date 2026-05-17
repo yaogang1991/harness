@@ -72,8 +72,8 @@ class TestPruneMessages:
             {"role": "user", "content": "retry please"},
         ]
         result = orch._prune_messages_for_size(messages)
-        # Assistant message should be truncated to ~2000 chars
-        assert len(result[1]["content"]) <= 2100
+        # Assistant message should be truncated to ~500 chars
+        assert len(result[1]["content"]) <= 600
         assert "truncated" in result[1]["content"]
 
     def test_preserves_system_and_last_user(self):
@@ -120,7 +120,7 @@ class TestConstants:
         assert IntelligentOrchestrator._MAX_MESSAGE_BYTES == 2_097_152
 
     def test_prune_threshold(self):
-        assert IntelligentOrchestrator._PRUNE_THRESHOLD == 0.80
+        assert IntelligentOrchestrator._PRUNE_THRESHOLD == 0.60
 
 
 class TestPlanIntegration:
