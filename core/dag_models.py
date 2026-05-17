@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from core.eval_models import SuccessCriterion
 
@@ -405,9 +405,34 @@ class FailureDecision(BaseModel):
 
 class OrchestratorPlan(BaseModel):
     """Output of the orchestrator agent's planning phase."""
-    reasoning: str
-    nodes: list[dict[str, Any]]
-    edges: list[dict[str, str]]
+    reasoning: str = ""
+    nodes: list[dict[str, Any]] = Field(default_factory=list)
+    edges: list[dict[str, str]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _infer_edges_from_dependencies(self) -> OrchestratorPlan:
+        """Infer edges from node dependencies when edges are missing (#561).
+
+        When the LLM response is truncated, the ``edges`` field may be
+        missing or empty. Each node's ``dependencies`` list contains the
+        IDs of upstream nodes, so we can reconstruct edges from that.
+        """
+        if self.edges:
+            return self
+
+        node_ids = {n.get("id", "") for n in self.nodes}
+        inferred: list[dict[str, str]] = []
+        for node in self.nodes:
+            for dep in node.get("dependencies", []):
+                if dep in node_ids:
+                    inferred.append({
+                        "from": dep,
+                        "to": node["id"],
+                    })
+
+        if inferred:
+            object.__setattr__(self, "edges", inferred)
+        return self
 
 
 class HandoffArtifact(BaseModel):
