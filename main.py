@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Harness CLI Entry Point: Intelligent Multi-Agent Orchestration.
+Weave CLI Entry Point: Intelligent Multi-Agent Orchestration.
 
 Usage:
     python main.py plan "Build a REST API for user authentication"
@@ -63,7 +63,7 @@ from cli.impact import cmd_impact_predict, cmd_impact_graph, cmd_impact_history 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Harness - Intelligent Multi-Agent Orchestration",
+        description="Weave - Autonomous Multi-Agent Orchestration",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -140,7 +140,7 @@ Examples:
     exec_parser.add_argument("--no-browser", action="store_true", help="Don't auto-open browser")
     exec_parser.add_argument(
         "--allow-self-modify", action="store_true",
-        help="Allow agents to modify the harness source tree (NOT recommended)",
+        help="Allow agents to modify the weave source tree (NOT recommended)",
     )
     exec_parser.add_argument(
         "--max-parallel", type=int, default=3,
@@ -190,7 +190,7 @@ Examples:
     run_parser.add_argument("--no-browser", action="store_true", help="Don't auto-open browser")
     run_parser.add_argument(
         "--allow-self-modify", action="store_true",
-        help="Allow agents to modify the harness source tree (NOT recommended)",
+        help="Allow agents to modify the weave source tree (NOT recommended)",
     )
     run_parser.add_argument(
         "--max-parallel", type=int, default=3,
@@ -244,7 +244,7 @@ Examples:
     )
     submit_parser.add_argument(
         "--allow-self-modify", action="store_true",
-        help="Allow agents to modify the harness source tree (NOT recommended)",
+        help="Allow agents to modify the weave source tree (NOT recommended)",
     )
     submit_parser.set_defaults(func=cmd_submit)
 

@@ -1,4 +1,4 @@
-# Harness Milestone Roadmap
+# Weave Milestone Roadmap
 
 ---
 
@@ -26,7 +26,7 @@
 
 ## M1 — Personal Edition
 
-**目标:** 单用户、CLI 驱动的多 Agent 软件开发 Harness，实现"扔任务进去，系统自动跑完"。
+**目标:** 单用户、CLI 驱动的多 Agent 软件开发系统，实现"扔任务进去，系统自动跑完"。
 
 ### Stage 1: Foundation (Tasks 01-03)
 - **Task 01** ✅ `docs/m1_personal_spec.md` — 范围、状态机、接口、DoD
