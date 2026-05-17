@@ -309,9 +309,65 @@ def extract_json(text: str) -> dict | None:
 
 def repair_truncated_json(text: str, brace_depth: int) -> str:
     """Attempt to close a truncated JSON object by appending missing
-    closing quotes and braces."""
+    closing quotes, brackets, and braces (#561).
+
+    Handles common truncation patterns:
+    - Unclosed string values
+    - Unclosed arrays (``]``)
+    - Missing ``]`` before ``}``
+    - Truncated mid-field (strips trailing incomplete key-value pair)
+    """
+    # Close unclosed string first
     quote_count = text.count('"') - text.count('\\"')
-    if quote_count % 2:
+    in_string = quote_count % 2 == 1
+    if in_string:
         text += '"'
-    text += '}' * brace_depth
+
+    stripped = text.rstrip()
+
+    # Characters that indicate a complete JSON value at the end
+    _COMPLETE_VALUE_ENDS = frozenset({
+        '}', ']', '"', "'",          # structural
+        '0', '1', '2', '3', '4',     # numbers
+        '5', '6', '7', '8', '9',
+        'e', 'E',                      # number exponent
+        'l',                           # null / bool (l from null/false/true)
+    })
+
+    if stripped:
+        last_char = stripped[-1]
+
+        if last_char == ':':
+            # Truncated right after key: — insert empty value
+            text = stripped + '""'
+        elif last_char == ',':
+            # Truncated after comma — remove trailing comma
+            text = stripped
+        elif last_char in _COMPLETE_VALUE_ENDS:
+            # Last char is a complete value terminator — just close structures
+            text = stripped
+        elif last_char not in _COMPLETE_VALUE_ENDS:
+            # Truncated mid-value or mid-key (alphabetic, etc.)
+            last_comma = stripped.rfind(",")
+            last_colon = stripped.rfind(":")
+            last_open_bracket = stripped.rfind("[")
+
+            if last_open_bracket > max(last_comma, last_colon):
+                # Inside an array — close it
+                text = stripped + "]"
+            elif last_comma > last_colon:
+                # After a comma — remove incomplete trailing element
+                text = stripped[:last_comma]
+            elif last_colon >= 0:
+                # Mid-value — replace with empty string
+                text = stripped[:last_colon + 1] + '""'
+
+    # Close unclosed brackets
+    bracket_depth = text.count("[") - text.count("]")
+    if bracket_depth > 0:
+        text += "]" * bracket_depth
+
+    # Close unclosed braces
+    text += "}" * brace_depth
+
     return text

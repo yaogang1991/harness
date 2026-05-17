@@ -200,3 +200,7 @@ For simple cases you MAY use plain strings like "tests pass" or "lint clean" —
   complex requirements, combine related sub-tasks into fewer, larger nodes
   rather than creating one node per micro-feature. Prefer 4-8 nodes for
   most tasks.
+- **Keep JSON concise**: Use short reasoning (1-2 sentences). Task descriptions
+  should be specific but not verbose. Avoid long inline code examples or
+  extensive commentary in the JSON. The total response MUST be valid JSON that
+  fits within the output token limit.
