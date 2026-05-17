@@ -37,9 +37,18 @@ class LearningAnalyzer:
         self,
         metrics_collector: Any | None = None,
         memory_manager: MemoryManager | None = None,
+        config: Any | None = None,
     ) -> None:
         self.metrics_collector = metrics_collector
         self.memory_manager = memory_manager
+        # Extract thresholds from LearningConfig, falling back to defaults
+        self._failure_rate_threshold = getattr(config, "failure_rate_threshold", 50.0)
+        self._success_rate_threshold = getattr(config, "success_rate_threshold", 80.0)
+        self._low_agent_rate_threshold = getattr(config, "low_agent_rate_threshold", 40.0)
+        self._min_error_samples = getattr(config, "min_error_samples", 3)
+        self._min_trend_samples = getattr(config, "min_trend_samples", 5)
+        self._retry_rate_threshold = getattr(config, "retry_rate_threshold", 30.0)
+        self._duration_variance_ratio = getattr(config, "duration_variance_ratio", 3.0)
 
     def analyze(self) -> list[LearningInsight]:
         """Run all analyses and return combined insights."""
@@ -93,7 +102,7 @@ class LearningAnalyzer:
         # Check for high failure rate
         success_rate = summary.get("success_rate", 50)
         total = summary.get("total", 0)
-        if total >= 3 and success_rate < 50:
+        if total >= self._min_error_samples and success_rate < self._failure_rate_threshold:
             insights.append(LearningInsight(
                 category=LearningCategory.EXECUTION,
                 insight_type=InsightType.ANTI_PATTERN,
@@ -113,7 +122,7 @@ class LearningAnalyzer:
         # Check for recurring error categories
         top_errors = failures.get("top_errors", [])
         for error_entry in top_errors:
-            if error_entry.get("count", 0) >= 3:
+            if error_entry.get("count", 0) >= self._min_error_samples:
                 insights.append(LearningInsight(
                     category=LearningCategory.EXECUTION,
                     insight_type=InsightType.ANTI_PATTERN,
@@ -124,13 +133,13 @@ class LearningAnalyzer:
                     ),
                     evidence=error_entry,
                     confidence=min(error_entry["count"] / 5, 1.0),
-                    impact="high" if error_entry["count"] >= 5 else "medium",
+                    impact="high" if error_entry["count"] >= self._min_trend_samples else "medium",
                 ))
 
         # Check for high retry rate
         retries = metrics.get("retries", {})
         retry_rate = retries.get("retry_rate", 0)
-        if retry_rate > 30 and total >= 3:
+        if retry_rate > self._retry_rate_threshold and total >= self._min_error_samples:
             insights.append(LearningInsight(
                 category=LearningCategory.EXECUTION,
                 insight_type=InsightType.ANTI_PATTERN,
@@ -157,7 +166,7 @@ class LearningAnalyzer:
         total = summary.get("total", 0)
         success_rate = summary.get("success_rate", 50)
 
-        if total >= 5 and success_rate >= 80:
+        if total >= self._min_trend_samples and success_rate >= self._success_rate_threshold:
             insights.append(LearningInsight(
                 category=LearningCategory.EXECUTION,
                 insight_type=InsightType.PATTERN,
@@ -178,7 +187,7 @@ class LearningAnalyzer:
                 success_tasks[exp.agent_type] = success_tasks.get(exp.agent_type, 0) + 1
 
         for agent_type, count in success_tasks.items():
-            if count >= 3:
+            if count >= self._min_error_samples:
                 insights.append(LearningInsight(
                     category=LearningCategory.EXECUTION,
                     insight_type=InsightType.PATTERN,
@@ -211,11 +220,11 @@ class LearningAnalyzer:
 
         for agent_type, stats in agent_stats.items():
             total = stats["success"] + stats["failed"]
-            if total < 3:
+            if total < self._min_error_samples:
                 continue
 
             success_rate = stats["success"] / total * 100
-            if success_rate < 40:
+            if success_rate < self._low_agent_rate_threshold:
                 insights.append(LearningInsight(
                     category=LearningCategory.AGENT_SELECTION,
                     insight_type=InsightType.ANTI_PATTERN,
@@ -233,7 +242,7 @@ class LearningAnalyzer:
                     impact="high",
                     applies_to=[agent_type],
                 ))
-            elif success_rate >= 80:
+            elif success_rate >= self._success_rate_threshold:
                 insights.append(LearningInsight(
                     category=LearningCategory.AGENT_SELECTION,
                     insight_type=InsightType.PATTERN,
@@ -264,9 +273,9 @@ class LearningAnalyzer:
         mean = duration.get("mean_sec", 0)
         count = duration.get("count", 0)
 
-        if count >= 5 and p95 > 0 and mean > 0:
+        if count >= self._min_trend_samples and p95 > 0 and mean > 0:
             ratio = p95 / max(mean, 0.001)
-            if ratio > 3:
+            if ratio > self._duration_variance_ratio:
                 insights.append(LearningInsight(
                     category=LearningCategory.PLANNING,
                     insight_type=InsightType.RECOMMENDATION,
@@ -290,7 +299,7 @@ class LearningAnalyzer:
         for error_entry in failures.get("top_errors", []):
             reason = error_entry.get("reason", "").lower()
             count = error_entry.get("count", 0)
-            if "timeout" in reason and count >= 5:
+            if "timeout" in reason and count >= self._min_trend_samples:
                 insights.append(LearningInsight(
                     category=LearningCategory.PLANNING,
                     insight_type=InsightType.RECOMMENDATION,

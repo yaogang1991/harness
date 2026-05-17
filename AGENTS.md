@@ -1,4 +1,4 @@
-# Unattended Software Development Harness — Agent Guide
+# Weave — Agent Guide
 
 > 本文档供 AI Coding Agent 阅读。如果你对人类用户可见的概览感兴趣，请查看 `README.md`；如果你需要架构细节，请查看 `ARCHITECTURE.md`。
 
@@ -6,7 +6,7 @@
 
 ## 项目概述
 
-本项目是一个**自托管的无人看守软件开发工作流 Harness**，基于 [Anthropic Managed Agents](https://www.anthropic.com/engineering/managed-agents) 架构理念实现。它通过编排多个 LLM Agent 来自动化完成软件需求分析、设计、编码、测试和交付的全流程。
+本项目是一个**自托管的无人看守软件开发工作流系统**，基于 [Anthropic Managed Agents](https://www.anthropic.com/engineering/managed-agents) 架构理念实现。它通过编排多个 LLM Agent 来自动化完成软件需求分析、设计、编码、测试和交付的全流程。
 
 项目采用 LLM 动态生成 DAG 的智能多 Agent 编排架构（支持并行执行、失败自适应）。
 
@@ -31,7 +31,7 @@
 ## 项目结构
 
 ```
-harness/
+weave/
 ├── core/                          # 核心模型与引擎
 │   ├── models.py                  # 所有 Pydantic 数据模型（DAG、Event、Session、Guardrail 等）
 │   ├── config.py                  # 配置管理（HarnessConfig、LLMConfig、SandboxConfig、MCPConfig）

@@ -13,6 +13,7 @@ operational scripts (npm install, pytest) that need access to the host.
 from __future__ import annotations
 
 import abc
+import os
 from dataclasses import dataclass
 
 from backend.base import ExecutionSandbox
@@ -66,6 +67,7 @@ class LocalSandbox(SandboxProvider):
     When env is None (default), builds a safe environment that strips
     sensitive keys (API tokens, passwords). When env is explicitly passed,
     uses it as-is — the caller is responsible for filtering.
+
     """
 
     sandbox_type = ExecutionSandbox.LOCAL
@@ -89,6 +91,7 @@ class LocalSandbox(SandboxProvider):
             k: v
             for k, v in os.environ.items()
             if not any(k.upper().startswith(p) for p in self.SENSITIVE_ENV_PREFIXES)
+
         }
 
     async def run_command(
@@ -112,6 +115,7 @@ class LocalSandbox(SandboxProvider):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=resolved_env,
+
             )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout
