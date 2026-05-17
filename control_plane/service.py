@@ -25,7 +25,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any  # noqa: F401 — still used for dict[str, Any] return types
 
 # Allow imports from project root (core/, orchestrator/, agent/, session/, ...)
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -33,15 +33,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.config import LLMConfig, WatchdogConfig  # noqa: E402
 from session.store import SessionStore  # noqa: E402
 from guardrails.policy import GuardrailPolicy  # noqa: E402
-from core.models import EventType  # noqa: E402
+from core.models import DAG, EventType  # noqa: E402
 from core.exceptions import PendingApprovalError  # noqa: E402
 
+from control_plane.approval import ApprovalRepository  # noqa: E402
 from control_plane.models import Job, Run, JobStatus, RetryPolicy  # noqa: E402
 from control_plane.repository import JobRepository  # noqa: E402
 from control_plane.run_lifecycle import RunLifecycleManager  # noqa: E402
 from control_plane.job_result import JobResultWriter  # noqa: E402
 from control_plane.errors import classify_error  # noqa: E402
 from control_plane.execution_factory import ExecutionFactory  # noqa: E402
+from backend.lifecycle import BackendManager  # noqa: E402
+from control_plane.hooks import ExecutionHook, ExecutionContext  # noqa: E402
 from control_plane.job_lifecycle import JobLifecycleManager  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -139,9 +142,9 @@ class RunService:
         default_backend: str = "local",
         backend_base_path: str = "./data/backends",
         non_interactive: bool = False,
-        approval_repo: Any | None = None,
+        approval_repo: ApprovalRepository | None = None,
         approval_timeout_sec: int = 300,
-        watchdog_config: Any | None = None,
+        watchdog_config: WatchdogConfig | None = None,
     ) -> None:
         self.repository = repository
         self.llm_config = llm_config
@@ -156,10 +159,10 @@ class RunService:
         self.approval_repo = approval_repo
         self.approval_timeout_sec = approval_timeout_sec
         self.watchdog_config = watchdog_config or _default_watchdog_config()
-        self._running_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._running_tasks: dict[str, asyncio.Task] = {}
 
         # Execution hooks — subsystems register lifecycle callbacks
-        self._hooks: list[Any] = []
+        self._hooks: list[ExecutionHook] = []
         self._register_hooks()
 
         self.default_backend = default_backend
@@ -509,7 +512,7 @@ class RunService:
             ImpactHook(llm_config=self.llm_config),
         ]
 
-    async def _run_before_hooks(self, ctx: Any) -> None:
+    async def _run_before_hooks(self, ctx: ExecutionContext) -> None:
         """Run all before_execution hooks. Errors are logged, never raised."""
         for hook in self._hooks:
             try:
@@ -517,7 +520,7 @@ class RunService:
             except Exception as exc:
                 logger.debug("Hook %s.before_execution failed: %s", type(hook).__name__, exc)
 
-    async def _run_after_hooks(self, ctx: Any, result_dag: Any) -> None:
+    async def _run_after_hooks(self, ctx: ExecutionContext, result_dag: DAG) -> None:
         """Run all after_execution hooks. Errors are logged, never raised."""
         for hook in self._hooks:
             try:
@@ -532,8 +535,8 @@ class RunService:
         store: SessionStore,
         work_dir: Path,
         run_id: str | None = None,
-        backend_manager: Any | None = None,
-    ) -> Any:
+        backend_manager: BackendManager | None = None,
+    ) -> DAG:
         """Plan a DAG and execute it. Subsystems run via hooks."""
         from control_plane.hooks import ExecutionContext
 

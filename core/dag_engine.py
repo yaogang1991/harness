@@ -16,7 +16,7 @@ import asyncio
 import concurrent.futures
 import logging
 from pathlib import Path
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable, Awaitable
 
 from core.models import (
     DAG,
@@ -27,7 +27,11 @@ from core.models import (
     FailureDecision,
     HandoffArtifact,
 )
+from core.config import NodeTimeoutConfig
 from core.exceptions import PendingApprovalError
+from backend.lifecycle import BackendManager
+from memory.manager import MemoryManager
+from evaluator.engine import EvaluatorEngine
 from core.artifact_handoff import ArtifactHandoffService
 from core.quality_gate import QualityGate
 from core.retry_policy import RetryPolicyEngine
@@ -37,8 +41,8 @@ from core.dag_checkpoint import CheckpointManager
 from core.dag_compat import DAGCompatMixin
 
 
-EventHandler = Callable[[ExecutionEvent], Coroutine[Any, Any, None]]
-ReplanHandler = Callable[[DAG, str], Coroutine[Any, Any, DAG]]
+EventHandler = Callable[[ExecutionEvent], Awaitable[None]]
+ReplanHandler = Callable[[DAG, str], Awaitable[DAG]]
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +59,12 @@ class DAGExecutionEngine(DAGCompatMixin):
 
     def __init__(
         self,
-        agent_executor: Callable[[DAGNode, list[HandoffArtifact]], Coroutine[Any, Any, dict]],
-        failure_handler: Callable[[DAG, str, str], Coroutine[Any, Any, FailureDecision]],
+        agent_executor: Callable[[DAGNode, list[HandoffArtifact]], Awaitable[dict]],
+        failure_handler: Callable[[DAG, str, str], Awaitable[FailureDecision]],
         replan_handler: ReplanHandler | None = None,
         max_replans: int = 3,
         max_parallel: int = 5,
-        evaluator: Any | None = None,
+        evaluator: EvaluatorEngine | None = None,
         artifact_path: str = "./data/artifacts",
         work_dir: str | None = None,
         job_timeout: float | None = None,
@@ -69,7 +73,7 @@ class DAGExecutionEngine(DAGCompatMixin):
         heartbeat_miss_threshold: int = 5,
         enable_watchdog: bool = True,
         # M3.2: Memory integration
-        memory_manager: Any | None = None,
+        memory_manager: MemoryManager | None = None,
         session_id: str | None = None,
         # Retry backoff configuration
         backoff_base: float = 2.0,
@@ -79,9 +83,9 @@ class DAGExecutionEngine(DAGCompatMixin):
         # Per-agent-type alert thresholds: {agent_type: min_missed_for_alert}
         alert_thresholds: dict[str, int] | None = None,
         # M3.4: Node timeout configuration (#360)
-        node_timeout_config: Any | None = None,
+        node_timeout_config: NodeTimeoutConfig | None = None,
         # R3: Backend manager for workspace isolation and cleanup (#176, #240)
-        backend_manager: Any | None = None,
+        backend_manager: BackendManager | None = None,
         # Job/run identifiers for workspace isolation (#176 PR2)
         job_id: str = "",
         run_id: str = "",

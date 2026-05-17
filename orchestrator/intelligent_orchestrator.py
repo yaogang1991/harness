@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any  # noqa: F401 — still used for dict[str, Any] internals
 
 from core.models import (
     DAG,
@@ -45,6 +45,8 @@ from orchestrator.prompts import PromptRegistry, get_prompt_registry
 
 logger = logging.getLogger(__name__)
 from templates.library import TemplateRegistry  # noqa: E402
+from learning.optimizer import LearningOptimizer  # noqa: E402
+from skills.registry import SkillRegistry  # noqa: E402
 
 
 # Infrastructure errors cannot be fixed by retrying with the same environment.
@@ -127,9 +129,9 @@ class IntelligentOrchestrator:
         session_store: SessionStore,
         agent_registry: AgentRegistry,
         llm_router: LLMRouter | None = None,
-        learning_optimizer: Any | None = None,
+        learning_optimizer: LearningOptimizer | None = None,
         prompt_registry: PromptRegistry | None = None,
-        skill_registry: Any | None = None,
+        skill_registry: SkillRegistry | None = None,
     ):
         self.llm_config = llm_config
         self.session_store = session_store
