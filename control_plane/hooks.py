@@ -129,7 +129,7 @@ class LearningHook(ExecutionHook):
             # Use injected repository (from RunService), not a new default one
             repo = self._repository or JobRepository()
             metrics_collector = MetricsCollector(repo)
-            analyzer = LearningAnalyzer(metrics_collector, mm)
+            analyzer = LearningAnalyzer(metrics_collector, mm, config.learning)
             self.optimizer = LearningOptimizer(mm)
             self._scheduler = LearningScheduler(config.learning, analyzer, self.optimizer)
         except Exception as exc:

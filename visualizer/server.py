@@ -591,7 +591,7 @@ def _get_learning_scheduler():
     job_repo = JobRepository()
     metrics_collector = MetricsCollector(job_repo)
 
-    analyzer = LearningAnalyzer(metrics_collector, memory_manager)
+    analyzer = LearningAnalyzer(metrics_collector, memory_manager, config.learning)
     optimizer = LearningOptimizer(memory_manager)
     return LearningScheduler(config.learning, analyzer, optimizer)
 

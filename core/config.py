@@ -287,6 +287,15 @@ class LearningConfig(BaseModel):
         default_factory=lambda: os.getenv("HARNESS_LEARNING_PATH", "./data/learning")
     )
 
+    # Analysis thresholds (#468)
+    failure_rate_threshold: float = Field(default=50.0, ge=0.0, le=100.0)
+    success_rate_threshold: float = Field(default=80.0, ge=0.0, le=100.0)
+    low_agent_rate_threshold: float = Field(default=40.0, ge=0.0, le=100.0)
+    min_error_samples: int = Field(default=3, ge=1)
+    min_trend_samples: int = Field(default=5, ge=1)
+    retry_rate_threshold: float = Field(default=30.0, ge=0.0, le=100.0)
+    duration_variance_ratio: float = Field(default=3.0, ge=1.0)
+
 
 class ImpactConfig(BaseModel):
     """Configuration for the M3.5 Impact Analysis system."""
