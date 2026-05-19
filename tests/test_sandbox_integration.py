@@ -340,9 +340,15 @@ class TestLocalSandboxCredentialIsolation:
     @pytest.mark.asyncio
     async def test_explicit_env_not_stripped(self):
         """When caller provides explicit env, values are passed through."""
+        import sys
+
         sandbox = LocalSandbox()
+        if sys.platform == "win32":
+            cmd = "echo %MY_VAR%"
+        else:
+            cmd = "echo $MY_VAR"
         result = await sandbox.run_command(
-            "echo $MY_VAR", cwd="/tmp", env={"MY_VAR": "test_value"},
+            cmd, cwd="/tmp", env={"MY_VAR": "test_value"},
         )
         assert "test_value" in result.stdout
 

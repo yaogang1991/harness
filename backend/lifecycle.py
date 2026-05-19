@@ -453,7 +453,7 @@ class BackendManager:
                    for part in py_file.parts):
                 continue
 
-            rel_path = str(py_file.relative_to(work_path))
+            rel_path = str(py_file.relative_to(work_path)).replace("\\", "/")
 
             # Skip if this file is in expected artifacts
             if rel_path in expected_set:

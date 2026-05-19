@@ -78,13 +78,13 @@ def scope_artifacts_to_criteria(
                 try:
                     p = Path(art)
                     if p.is_absolute():
-                        art_rel = str(p.relative_to(work_dir))
+                        art_rel = str(p.relative_to(work_dir)).replace("\\", "/")
                 except ValueError:
                     pass
             if any(
-                art_rel == own
-                or art_rel.endswith("/" + own)
-                or own.endswith("/" + art_rel)
+                art_rel.replace("\\", "/") == own.replace("\\", "/")
+                or art_rel.replace("\\", "/").endswith("/" + own.replace("\\", "/"))
+                or own.replace("\\", "/").endswith("/" + art_rel.replace("\\", "/"))
                 for own in owned_set
             ):
                 filtered.append(art)
@@ -120,20 +120,20 @@ def scope_artifacts_to_criteria(
             for match in work_dir.glob(pattern):
                 if match.is_file():
                     try:
-                        expected_files.add(str(match.relative_to(work_dir)))
+                        expected_files.add(str(match.relative_to(work_dir)).replace("\\", "/"))
                     except ValueError:
-                        expected_files.add(str(match))
+                        expected_files.add(str(match).replace("\\", "/"))
 
     # Filter artifacts to only expected files
     scoped = []
     for art in output_artifacts:
-        # Normalize: try relative path
-        art_rel = art
+        # Normalize: try relative path with forward slashes
+        art_rel = art.replace("\\", "/")
         if work_dir:
             try:
                 p = Path(art)
                 if p.is_absolute():
-                    art_rel = str(p.relative_to(work_dir))
+                    art_rel = str(p.relative_to(work_dir)).replace("\\", "/")
             except ValueError:
                 pass
         # Match against expected files (prefix match for directories)
@@ -147,7 +147,7 @@ def scope_artifacts_to_criteria(
                 break
         else:
             # Also check if artifact is directly in expected_paths
-            if art in expected_paths or any(art.endswith("/" + e) for e in expected_paths):
+            if art in expected_paths or any(art_rel.endswith("/" + e.replace("\\", "/")) for e in expected_paths):
                 scoped.append(art)
 
     if scoped:
